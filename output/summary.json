@@ -1,0 +1,21 @@
+{
+  "generated_at": "2026-05-25 21:25",
+  "avg_price_wan": 3.41,
+  "avg_rent_sqm": 83.3,
+  "annual_yield_pct": 2.93,
+  "rent_sale_ratio": 409,
+  "best_mode": "民宿",
+  "best_irr_pct": 4.56,
+  "discount_rate_pct": 5.5,
+  "house_count": 53,
+  "has_geo": false,
+  "has_regression": true,
+  "best_no_loan_mode": "民宿",
+  "best_no_loan_irr_pct": 2.84,
+  "has_no_loan": true,
+  "best_owned_mode": "隔断分租",
+  "best_owned_noi_wan": 6.61,
+  "best_owned_monthly_wan": 0.55,
+  "best_owned_cap_rate_pct": 2.15,
+  "has_owned": true
+}
