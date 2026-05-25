@@ -4,7 +4,7 @@
 
 ## English Version
 
-# Guangzhou Haizhu District Real Estate Investment Analysis
+# Guangzhou Residential Real Estate Investment Analysis Prototype
 
 **Quantitative Analysis of Housing Prices, Rental Yields & DCF Valuation**
 
@@ -167,7 +167,7 @@ Data scraped from **Beike (贝壳找房)** housing price map and rental listings
 
 ## 中文版本
 
-# 广州海珠区房产投资量化分析系统
+# 广州海珠区住宅资产管理策略分析原型
 
 **基于真实市场数据的端到端数据采集、财务建模与可视化决策项目**
 
