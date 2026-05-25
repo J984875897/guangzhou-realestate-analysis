@@ -17,7 +17,7 @@
 
 ### Background
 
-I own a vacant residential property in Haizhu District, Guangzhou, and needed to decide between three management strategies — traditional long-term rental (整租), short-term/Airbnb-style rental (民宿), and room-by-room rental (隔断分租) — versus selling outright. Rather than relying on intuition, I built this end-to-end data pipeline to collect real market data, model investment returns under each strategy, and produce an interactive dashboard to support the decision.
+Using a representative residential property in Haizhu District, Guangzhou as a case study, this paper compares asset management strategies such as whole-unit rental, short-term rental, subletting, and sale. To avoid making decisions based on intuition, a complete data-driven system was built from scratch: covering the entire process from crawling real market data to financial modeling to quantify the returns of each option, and finally generating interactive decision reports.
 
 ---
 
@@ -180,7 +180,7 @@ Data scraped from **Beike (贝壳找房)** housing price map and rental listings
 
 ### 项目背景
 
-本人持有一套广州市海珠区空置住宅，面临整租、民宿（短租）、隔断分租三种经营方式的选择，同时需与直接出售进行横向对比。为避免凭直觉决策，从零搭建了这套完整的数据驱动系统：从爬取真实市场数据，到财务建模量化各方案回报，再到生成可交互决策报告，全流程覆盖。
+以广州市海珠区一套代表性住宅为案例，比较整租、短租、分租与出售的资产管理策略。为避免凭直觉决策，从零搭建了这套完整的数据驱动系统：从爬取真实市场数据，到财务建模量化各方案回报，再到生成可交互决策报告，全流程覆盖。
 
 ---
 
