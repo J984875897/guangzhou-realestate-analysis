@@ -59,6 +59,39 @@ def _hex_alpha(hex_color: str, alpha: float) -> str:
     return f"rgba({r},{g},{b},{alpha})"
 
 
+def _format_source_note(source_info: dict, df_len: int = None) -> str:
+    """Build a data-provenance annotation string from a source_info dict."""
+    name     = source_info.get("name", "未知来源")
+    is_mock  = source_info.get("is_mock", False)
+
+    if is_mock:
+        n = df_len or source_info.get("scraped", source_info.get("total_cases", 0))
+        return f"⚠ 模拟数据（{name}爬虫采集量不足）  |  模拟条数：{n}"
+
+    if "total_cases" in source_info:          # renovation / tubatu type
+        total = source_info.get("total_cases", 0)
+        sp    = source_info.get("success_pages", 0)
+        fp    = source_info.get("failed_pages", 0)
+        ds    = source_info.get("detail_success", 0)
+        df_   = source_info.get("detail_failed", 0)
+        parts = [f"来源：{name}"]
+        if sp or fp:
+            parts.append(f"页面采集：{sp} 成功 / {fp} 失败")
+        if ds or df_:
+            parts.append(f"详情采集：{ds} 成功 / {df_} 失败")
+        parts.append(f"共 {total} 条案例")
+        return "  |  ".join(parts)
+
+    # house / rent type
+    scraped = source_info.get("scraped", df_len or 0)
+    success = source_info.get("success", scraped)
+    failed  = source_info.get("failed", 0)
+    parts   = [f"来源：{name}", f"采集：{scraped} 条"]
+    if failed > 0:
+        parts.append(f"有效：{success} 条  剔除：{failed} 条")
+    return "  |  ".join(parts)
+
+
 # =============================================================================
 # 对外接口
 # =============================================================================
@@ -76,6 +109,8 @@ def generate_all_charts(
     regression_results: dict = None,
     no_loan_results: dict = None,
     owned_results: dict = None,
+    sensitivity_results: dict = None,
+    data_source_info: dict = None,
 ) -> dict[str, Path]:
     """
     生成全部图表，保存到 output_dir。
@@ -88,13 +123,17 @@ def generate_all_charts(
     output_dir.mkdir(parents=True, exist_ok=True)
     paths = {}
 
+    house_info = (data_source_info or {}).get("house")
+    rent_info  = (data_source_info or {}).get("rent")
+    reno_info  = (data_source_info or {}).get("reno")
+
     tasks = [
-        ("房价分布",     _chart_price_distribution,  (house_df,)),
-        ("租金分布",     _chart_rent_distribution,   (rent_df,)),
+        ("房价分布",     _chart_price_distribution,  (house_df, house_info)),
+        ("租金分布",     _chart_rent_distribution,   (rent_df, rent_info)),
         ("租售比",       _chart_rent_sale_ratio,     (house_df, rent_df)),
         ("DCF现金流",    _chart_dcf_cashflow,        (dcf_results, dcf_params)),
         ("NPV_IRR对比",  _chart_npv_irr,             (dcf_results,)),
-        ("装修成本对比", _chart_renovation_cost,     (reno_summary,)),
+        ("装修成本对比", _chart_renovation_cost,     (reno_summary, reno_info)),
     ]
 
     # 可选：地理分布图 + 回归分析图
@@ -112,6 +151,11 @@ def generate_all_charts(
     if owned_results:
         tasks.append(("已持有NOI对比", _chart_owned_noi, (owned_results, dcf_params)))
         tasks.append(("已持有累计收益", _chart_owned_cumulative, (owned_results, dcf_params)))
+    if sensitivity_results:
+        tasks.append(("敏感性分析表", _chart_sensitivity_table,
+                      (sensitivity_results, dcf_params)))
+        tasks.append(("敏感性龙卷图", _chart_tornado,
+                      (sensitivity_results, dcf_params)))
 
     for name, func, args in tasks:
         try:
@@ -133,7 +177,12 @@ def generate_all_charts(
                 print(f"  [图表] {name}.png 已保存")
 
             if fig_plotly is not None and _PLOTLY_AVAILABLE:
-                pio.write_html(fig_plotly, str(html_path), auto_open=False)
+                pio.write_html(
+                    fig_plotly,
+                    str(html_path),
+                    auto_open=False,
+                    include_plotlyjs="cdn",
+                )
                 paths[f"{name}_html"] = html_path
                 print(f"  [图表] {name}.html 已保存")
 
@@ -147,7 +196,7 @@ def generate_all_charts(
 # 图表1：二手房单价分布
 # =============================================================================
 
-def _chart_price_distribution(house_df: pd.DataFrame):
+def _chart_price_distribution(house_df: pd.DataFrame, source_info: dict = None):
     if house_df.empty or "unit_price" not in house_df.columns:
         return None, None
 
@@ -168,7 +217,7 @@ def _chart_price_distribution(house_df: pd.DataFrame):
     ax.set_ylabel("小区数量", fontsize=11)
     ax.legend(fontsize=10)
     ax.grid(axis="y", alpha=0.3)
-    _add_data_note(ax, house_df)
+    _add_data_note(ax, house_df, source_info)
 
     fig_plotly = None
     if _PLOTLY_AVAILABLE:
@@ -191,6 +240,10 @@ def _chart_price_distribution(house_df: pd.DataFrame):
             yaxis_title="小区数量",
             template="plotly_white",
         )
+        if source_info:
+            _apply_source_note_plotly(
+                fig_plotly, _format_source_note(source_info, len(house_df))
+            )
 
     return fig, fig_plotly
 
@@ -199,7 +252,7 @@ def _chart_price_distribution(house_df: pd.DataFrame):
 # 图表2：租金单价分布
 # =============================================================================
 
-def _chart_rent_distribution(rent_df: pd.DataFrame):
+def _chart_rent_distribution(rent_df: pd.DataFrame, source_info: dict = None):
     if rent_df is None or rent_df.empty or "monthly_rent_per_sqm" not in rent_df.columns:
         return _placeholder_chart("租金数据暂缺（爬虫未采集到数据）"), None
 
@@ -220,7 +273,7 @@ def _chart_rent_distribution(rent_df: pd.DataFrame):
     ax.set_ylabel("房源数量", fontsize=11)
     ax.legend(fontsize=10)
     ax.grid(axis="y", alpha=0.3)
-    _add_data_note(ax, rent_df)
+    _add_data_note(ax, rent_df, source_info)
 
     fig_plotly = None
     if _PLOTLY_AVAILABLE:
@@ -240,6 +293,10 @@ def _chart_rent_distribution(rent_df: pd.DataFrame):
             yaxis_title="房源数量",
             template="plotly_white",
         )
+        if source_info:
+            _apply_source_note_plotly(
+                fig_plotly, _format_source_note(source_info, len(rent_df))
+            )
 
     return fig, fig_plotly
 
@@ -469,7 +526,7 @@ def _chart_npv_irr(dcf_results: dict):
 # 图表6：装修档次成本与工期对比
 # =============================================================================
 
-def _chart_renovation_cost(reno_summary: pd.DataFrame):
+def _chart_renovation_cost(reno_summary: pd.DataFrame, source_info: dict = None):
     if reno_summary is None or reno_summary.empty:
         return _placeholder_chart("装修数据缺失"), None
 
@@ -508,6 +565,10 @@ def _chart_renovation_cost(reno_summary: pd.DataFrame):
     ax2.set_title("施工工期（天）", fontsize=12)
     ax2.grid(axis="y", alpha=0.3)
 
+    if source_info:
+        note = _format_source_note(source_info)
+        fig.text(0.99, 0.01, note, ha="right", va="bottom",
+                 fontsize=8, color="gray", transform=fig.transFigure)
     plt.tight_layout()
 
     fig_plotly = None
@@ -526,6 +587,8 @@ def _chart_renovation_cost(reno_summary: pd.DataFrame):
             yaxis_title="单价（元/㎡）",
             template="plotly_white",
         )
+        if source_info:
+            _apply_source_note_plotly(fig_plotly, _format_source_note(source_info))
 
     return fig, fig_plotly
 
@@ -1026,6 +1089,308 @@ def _chart_owned_cumulative(owned_results: dict, dcf_params: dict):
 
 
 # =============================================================================
+# 图表：IRR / NPV 敏感性分析表
+# =============================================================================
+
+def _chart_sensitivity_table(sensitivity_results: dict, dcf_params: dict):
+    import math
+
+    try:
+        import plotly.colors as pc
+    except ImportError:
+        pc = None
+
+    PARAM_ORDER = ["occ_rate", "rent_per_sqm", "terminal_cap", "discount_rate", "price_delta"]
+    modes = ["整租", "民宿", "隔断分租"]
+
+    # ── 拼装表格行数据 ──────────────────────────────────────────────
+    col_param, col_level = [], []
+    col_irr = {m: [] for m in modes}
+    fill_colors = {m: [] for m in modes}
+    font_colors_m = {m: [] for m in modes}
+    font_sizes_m  = {m: [] for m in modes}
+
+    for key in PARAM_ORDER:
+        if key not in sensitivity_results:
+            continue
+        data = sensitivity_results[key]
+        metric = data["metric"]
+        labels = data["level_labels"]
+        pname  = data["param_name"]
+        bidx   = data["base_index"]
+
+        # 每个参数组内独立归一化
+        all_vals = []
+        for m in modes:
+            all_vals += [v for v in data["results"].get(m, []) if not math.isnan(v)]
+        vmin = min(all_vals) if all_vals else 0
+        vmax = max(all_vals) if all_vals else 1
+        span = vmax - vmin if vmax != vmin else 1
+
+        for i, lbl in enumerate(labels):
+            col_param.append(pname if i == 0 else "")
+            col_level.append(lbl)
+            for m in modes:
+                val = data["results"].get(m, [float("nan")] * len(labels))[i]
+                if metric == "irr":
+                    txt = f"{val*100:.2f}%" if not math.isnan(val) else "—"
+                else:
+                    txt = f"{val:.1f}万" if not math.isnan(val) else "—"
+                col_irr[m].append(txt)
+
+                # 颜色
+                if not math.isnan(val) and pc is not None:
+                    norm = (val - vmin) / span
+                    color = pc.sample_colorscale("RdYlGn", [norm])[0]
+                else:
+                    color = "#F8F9FA"
+                fill_colors[m].append(color)
+
+                is_base = (bidx is not None and i == bidx)
+                font_colors_m[m].append("#1a237e" if is_base else "#333333")
+                font_sizes_m[m].append(13 if is_base else 11)
+
+    # ── Plotly Table ────────────────────────────────────────────────
+    # Mark base-case level labels with a star prefix for visual emphasis
+    col_level_marked = []
+    row_cursor = 0
+    for key in PARAM_ORDER:
+        if key not in sensitivity_results:
+            continue
+        data = sensitivity_results[key]
+        bidx = data["base_index"]
+        for i, lbl in enumerate(data["level_labels"]):
+            col_level_marked.append(f"★ {lbl}" if bidx is not None and i == bidx else lbl)
+        row_cursor += len(data["level_labels"])
+
+    fig_plotly = None
+    if _PLOTLY_AVAILABLE:
+        n_rows = len(col_param)
+        all_fill = (
+            ["#FFFFFF"] * n_rows,
+            ["#F0F4FF"] * n_rows,
+        ) + tuple(fill_colors[m] for m in modes)
+
+        fig_plotly = go.Figure(go.Table(
+            columnwidth=[2.5, 1.8, 2.2, 2.2, 2.2],
+            header=dict(
+                values=["<b>参数</b>", "<b>参数值</b>",
+                        "<b>整租 IRR/NPV</b>", "<b>民宿 IRR/NPV</b>", "<b>隔断分租 IRR/NPV</b>"],
+                fill_color="#3949ab",
+                font=dict(color="white", size=12),
+                align="center",
+                height=32,
+            ),
+            cells=dict(
+                values=[col_param, col_level_marked] + [col_irr[m] for m in modes],
+                fill_color=list(all_fill),
+                font=dict(color="#333333", size=11),
+                align=["left", "center"] + ["center"] * 3,
+                height=28,
+            ),
+        ))
+        fig_plotly.update_layout(
+            title=dict(text="敏感性分析：IRR / NPV 参数影响", font=dict(size=15)),
+            height=620,
+            template="plotly_white",
+            margin=dict(l=20, r=20, t=60, b=50),
+            annotations=[dict(
+                text="折现率行显示 NPV（万元），其余行显示 IRR（%）",
+                xref="paper", yref="paper", x=0, y=-0.06,
+                showarrow=False, font=dict(size=10, color="gray"),
+            )],
+        )
+
+    # ── Matplotlib PNG ──────────────────────────────────────────────
+    import matplotlib.cm as mcm
+    import matplotlib.colors as mcolors
+
+    n_rows = len(col_param)
+    fig, ax = plt.subplots(figsize=(14, max(6, n_rows * 0.45 + 1.5)),
+                           facecolor=COLORS["bg"])
+    ax.set_facecolor(COLORS["bg"])
+    ax.axis("off")
+
+    headers = ["参数", "参数值", "整租", "民宿", "隔断分租"]
+    col_widths = [0.18, 0.12, 0.23, 0.23, 0.23]
+    cell_data = [[col_param[i], col_level[i]] + [col_irr[m][i] for m in modes]
+                 for i in range(n_rows)]
+
+    cmap = mcm.get_cmap("RdYlGn")
+
+    # Build cell colors for mpl table
+    cell_colors = []
+    for i in range(n_rows):
+        row_c = ["#FFFFFF", "#F5F5F5"]
+        for m in modes:
+            fc = fill_colors[m][i]
+            # fill_colors already hex or plotly rgb string — convert to mpl
+            if fc.startswith("rgb(") or fc.startswith("rgba("):
+                # parse plotly rgb string
+                nums = fc.split("(")[1].split(")")[0].split(",")
+                row_c.append(tuple(int(n.strip()) / 255 for n in nums[:3]) + (1.0,))
+            else:
+                row_c.append(fc)
+        cell_colors.append(row_c)
+
+    tbl = ax.table(
+        cellText=cell_data,
+        colLabels=headers,
+        cellLoc="center",
+        loc="center",
+        colWidths=col_widths,
+        cellColours=cell_colors,
+    )
+    tbl.auto_set_font_size(False)
+    tbl.set_fontsize(9)
+
+    # Style header row
+    for col_i in range(len(headers)):
+        cell = tbl[0, col_i]
+        cell.set_facecolor("#3949ab")
+        cell.set_text_props(color="white", fontsize=10, fontweight="bold")
+
+    # Highlight base index rows
+    row_cursor = 1
+    for key in PARAM_ORDER:
+        if key not in sensitivity_results:
+            continue
+        data = sensitivity_results[key]
+        bidx = data["base_index"]
+        n = len(data["level_labels"])
+        if bidx is not None:
+            tbl_row = row_cursor + bidx
+            for col_i in range(len(headers)):
+                cell = tbl[tbl_row, col_i]
+                cell.set_edgecolor("navy")
+                cell.set_linewidth(2)
+        row_cursor += n
+
+    ax.set_title("IRR/NPV 敏感性分析（三种商业模式）",
+                 fontsize=13, pad=12, color="#1a237e")
+    fig.text(0.5, 0.01, "折现率行显示 NPV（万元），其余行显示 IRR（%）",
+             ha="center", fontsize=8, color="gray")
+    fig.tight_layout()
+
+    return fig, fig_plotly
+
+
+# =============================================================================
+# 图表：IRR 敏感性龙卷图
+# =============================================================================
+
+def _chart_tornado(sensitivity_results: dict, dcf_params: dict):
+    import math
+
+    tornado = sensitivity_results.get("_tornado_ref", {})
+    rows     = tornado.get("rows", [])
+    base_irr = tornado.get("base_irr", 0.0)
+
+    if not rows or math.isnan(base_irr):
+        return _placeholder_chart("龙卷图数据不足"), None
+
+    params     = [r["param"]      for r in rows]
+    low_deltas = [r["low_irr"]  - base_irr for r in rows]
+    high_deltas= [r["high_irr"] - base_irr for r in rows]
+    low_labels = [r["low_label"]  for r in rows]
+    high_labels= [r["high_label"] for r in rows]
+    y_pos      = list(range(len(rows)))
+
+    # ── Matplotlib PNG ──────────────────────────────────────────────
+    fig, ax = plt.subplots(figsize=(10, 5), facecolor=COLORS["bg"])
+    ax.set_facecolor(COLORS["bg"])
+
+    for i, row in enumerate(rows):
+        low_irr  = row["low_irr"]
+        high_irr = row["high_irr"]
+        # left wing (low scenario)
+        ax.barh(i, base_irr - low_irr, left=low_irr,
+                color=COLORS["accent"], alpha=0.85, height=0.5)
+        # right wing (high scenario)
+        ax.barh(i, high_irr - base_irr, left=base_irr,
+                color=COLORS["整租"], alpha=0.85, height=0.5)
+        # value labels
+        ax.text(low_irr - 0.001, i, f"{low_irr*100:.2f}%",
+                ha="right", va="center", fontsize=8, color="#555")
+        ax.text(high_irr + 0.001, i, f"{high_irr*100:.2f}%",
+                ha="left", va="center", fontsize=8, color="#555")
+
+    ax.axvline(base_irr, color="black", linestyle="--", linewidth=1.5,
+               label=f"基准 IRR {base_irr*100:.2f}%")
+    ax.set_yticks(y_pos)
+    ax.set_yticklabels(params, fontsize=10)
+    ax.invert_yaxis()
+    ax.xaxis.set_major_formatter(mticker.FuncFormatter(lambda x, _: f"{x*100:.1f}%"))
+    ax.set_xlabel("IRR", fontsize=10)
+    ax.set_title("IRR 敏感性龙卷图（参考模式：民宿）", fontsize=13, color="#1a237e", pad=10)
+
+    from matplotlib.patches import Patch
+    legend_els = [
+        Patch(facecolor=COLORS["accent"], alpha=0.85, label="低值场景"),
+        Patch(facecolor=COLORS["整租"],   alpha=0.85, label="高值场景"),
+    ]
+    ax.legend(handles=legend_els, loc="lower right", fontsize=9)
+    ax.text(0.99, -0.1, "折现率不影响 IRR，已排除",
+            transform=ax.transAxes, ha="right", fontsize=8, color="gray")
+    fig.tight_layout()
+
+    # ── Plotly ──────────────────────────────────────────────────────
+    fig_plotly = None
+    if _PLOTLY_AVAILABLE:
+        base_list = [base_irr] * len(rows)
+
+        fig_plotly = go.Figure()
+        fig_plotly.add_trace(go.Bar(
+            name="低值场景",
+            x=low_deltas,
+            y=params,
+            base=base_list,
+            orientation="h",
+            marker_color=COLORS["accent"],
+            opacity=0.85,
+            text=low_labels,
+            textposition="outside",
+        ))
+        fig_plotly.add_trace(go.Bar(
+            name="高值场景",
+            x=high_deltas,
+            y=params,
+            base=base_list,
+            orientation="h",
+            marker_color=COLORS["整租"],
+            opacity=0.85,
+            text=high_labels,
+            textposition="outside",
+        ))
+        fig_plotly.add_vline(
+            x=base_irr,
+            line_dash="dash",
+            line_color="black",
+            line_width=1.5,
+            annotation_text=f"基准 {base_irr*100:.2f}%",
+            annotation_position="top",
+        )
+        fig_plotly.update_layout(
+            title=dict(text="IRR 敏感性龙卷图（参考模式：民宿）", font=dict(size=15)),
+            barmode="overlay",
+            xaxis=dict(tickformat=".1%", title="IRR"),
+            yaxis=dict(autorange="reversed"),
+            height=420,
+            template="plotly_white",
+            legend=dict(orientation="h", y=-0.15),
+            margin=dict(l=20, r=20, t=60, b=80),
+            annotations=[dict(
+                text="折现率不影响 IRR，已排除",
+                xref="paper", yref="paper", x=1, y=-0.18,
+                xanchor="right", showarrow=False,
+                font=dict(size=10, color="gray"),
+            )],
+        )
+
+    return fig, fig_plotly
+
+
+# =============================================================================
 # 工具函数
 # =============================================================================
 
@@ -1039,12 +1404,27 @@ def _placeholder_chart(message: str):
     return fig
 
 
-def _add_data_note(ax, df: pd.DataFrame):
+def _add_data_note(ax, df: pd.DataFrame, source_info: dict = None):
     """在图表底部添加数据来源注释"""
-    if "scraped_at" in df.columns:
+    if source_info:
+        note = _format_source_note(source_info, len(df))
+    elif "scraped_at" in df.columns:
         ts = pd.to_datetime(df["scraped_at"]).max()
-        note = f"数据截至 {ts.strftime('%Y-%m-%d')}  共 {len(df)} 条记录"
+        note = f"数据截至 {ts.strftime('%Y-%m-%d')}  |  共 {len(df)} 条记录"
     else:
         note = f"共 {len(df)} 条记录"
     ax.text(0.99, 0.01, note, transform=ax.transAxes,
             ha="right", va="bottom", fontsize=8, color="gray")
+
+
+def _apply_source_note_plotly(fig_plotly, note: str):
+    """Add a data-provenance annotation to a Plotly figure."""
+    existing = list(fig_plotly.layout.annotations or [])
+    existing.append(dict(
+        text=note,
+        xref="paper", yref="paper",
+        x=0.99, y=-0.07,
+        xanchor="right", showarrow=False,
+        font=dict(size=9, color="gray"),
+    ))
+    fig_plotly.update_layout(annotations=existing, margin=dict(b=70))

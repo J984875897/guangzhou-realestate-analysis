@@ -36,6 +36,7 @@ class RenovationCase:
     auxiliary_cost: float = 0.0
     design_cost:    float = 0.0
     furniture_cost: float = 0.0
+    source_url:     str   = ""
 
 
 @dataclass
@@ -49,18 +50,23 @@ class MaterialPrice:
 
 
 class TubatuScraper:
-    CASE_LIST_URL  = "https://www.tubatu.com/cases/?city={city}&area={area_code}&style=0&page={page}"
+    # 旧入口 https://www.tubatu.com/cases/ 在当前环境会 TLS handshake failure；
+    # 当前可访问的土巴兔整屋案例入口在 xiaoguotu.to8to.com。
+    CASE_LIST_URL  = "https://xiaoguotu.to8to.com/case/area{area_code}/p{page}.html"
+    LEGACY_CASE_LIST_URL = "https://www.tubatu.com/cases/?city={city}&area={area_code}&style=0&page={page}"
     PRICE_CALC_URL = "https://www.tubatu.com/price/?city={city}&area={area}"
     MATERIAL_URL   = "https://www.tubatu.com/cailiao/{city}/pg{page}/"
+    CASES_PER_PAGE_LIMIT = 12
 
-    AREA_CODE_MAP = {
-        (0,   60):  "1",
-        (60,  90):  "2",
-        (90,  120): "3",
-        (120, 150): "4",
-        (150, 200): "5",
-        (200, 999): "6",
-    }
+    AREA_BUCKETS = [
+        (0,   60,  "1"),
+        (61,  80,  "2"),
+        (81,  100, "3"),
+        (101, 120, "4"),
+        (121, 150, "5"),
+        (151, 200, "6"),
+        (201, 999, "10"),
+    ]
 
     LEVEL_KEYWORDS = {
         "豪装":   ["豪装", "豪华", "顶配", "进口"],
@@ -71,6 +77,7 @@ class TubatuScraper:
 
     def __init__(self, city: str = "广州"):
         self.city = city
+        self.last_case_stats = {}
         self.city_path = {
             "上海": "shanghai", "北京": "beijing",
             "广州": "guangzhou", "深圳": "shenzhen",
@@ -84,80 +91,215 @@ class TubatuScraper:
     ) -> list[RenovationCase]:
         wait_for_peak_hour()
 
-        area_code = self._get_area_code(area_range)
+        area_codes = self._get_area_codes(area_range)
         cases = []
+        seen_ids = set()
+        stats = {
+            "source": "to8to_xiaoguotu",
+            "requested_pages": 0,
+            "success_pages": 0,
+            "failed_pages": 0,
+            "detail_success": 0,
+            "detail_failed": 0,
+            "failures": [],
+            "legacy_url_note": "旧 tubatu.com/cases 入口 TLS 失败，已切换到 xiaoguotu.to8to.com/case/areaN/pN.html",
+        }
 
         async with BrowserEngine(headless=True) as engine:
             context, page = await engine.new_page()
+            detail_page = await context.new_page()
+            detail_page.set_default_timeout(45_000)
 
             try:
-                for page_num in range(1, pages + 1):
-                    url = self.CASE_LIST_URL.format(
-                        city=self.city,
-                        area_code=area_code,
-                        page=page_num
-                    )
-                    print(f"[土巴兔] 案例列表第 {page_num}/{pages} 页: {url}")
+                for area_code in area_codes:
+                    for page_num in range(1, pages + 1):
+                        url = self.CASE_LIST_URL.format(area_code=area_code, page=page_num)
+                        legacy_url = self.LEGACY_CASE_LIST_URL.format(
+                            city=self.city,
+                            area_code=area_code,
+                            page=page_num,
+                        )
+                        stats["requested_pages"] += 1
+                        print(f"[土巴兔] 当前入口 area{area_code} 第 {page_num}/{pages} 页: {url}")
+                        print(f"[土巴兔] 旧入口仅诊断用: {legacy_url}")
 
-                    success = await engine.goto(page, url)
-                    if not success:
-                        continue
+                        success, err = await self._goto(page, url)
+                        if not success:
+                            stats["failed_pages"] += 1
+                            stats["failures"].append({"url": url, "error": err})
+                            continue
 
-                    await page.wait_for_selector(".case-list-item", timeout=20_000)
-                    await human_scroll(page, scroll_times=4)
+                        try:
+                            await page.wait_for_selector(
+                                ".xmp_container .item",
+                                state="attached",
+                                timeout=15_000,
+                            )
+                            await human_scroll(page, scroll_times=3)
+                        except Exception as e:
+                            stats["failed_pages"] += 1
+                            stats["failures"].append({"url": url, "error": f"列表选择器失败: {e}"})
+                            continue
 
-                    page_cases = await self._parse_case_list(page)
-                    cases.extend(page_cases)
-                    print(f"[土巴兔] 第{page_num}页解析到 {len(page_cases)} 个案例")
+                        list_items = await self._parse_case_list(page)
+                        stats["success_pages"] += 1
+                        print(f"[土巴兔] area{area_code} 第{page_num}页发现 {len(list_items)} 个候选案例")
 
-                    if page_num < pages:
-                        await async_human_delay(3.0, 7.0)
+                        for item in list_items:
+                            case_id = item.get("case_id") or item.get("url")
+                            if case_id in seen_ids:
+                                continue
+                            seen_ids.add(case_id)
+
+                            detail = await self._fetch_case_detail(detail_page, item)
+                            if detail is None:
+                                stats["detail_failed"] += 1
+                                continue
+                            stats["detail_success"] += 1
+
+                            if detail.area > 0 and detail.total_price > 0:
+                                cases.append(detail)
+
+                        if page_num < pages:
+                            await async_human_delay(1.2, 2.5)
 
             finally:
+                await detail_page.close()
                 await context.close()
 
+        self.last_case_stats = stats
         print(f"[土巴兔] 共采集 {len(cases)} 个装修案例")
+        print(
+            f"[土巴兔] 页面成功/失败: {stats['success_pages']}/{stats['failed_pages']}，"
+            f"详情成功/失败: {stats['detail_success']}/{stats['detail_failed']}"
+        )
         return cases
 
-    async def _parse_case_list(self, page) -> list[RenovationCase]:
-        cases = []
-        case_elements = await page.query_selector_all(".case-list-item")
-
-        for el in case_elements:
+    async def _goto(
+        self,
+        page,
+        url: str,
+        retries: int = 2,
+        wait_until: str = "commit",
+        timeout: int = 20_000,
+    ) -> tuple[bool, str]:
+        last_error = ""
+        for attempt in range(1, retries + 1):
             try:
-                data = await el.evaluate("""
-                    (el) => ({
-                        case_id:    el.dataset.id || el.getAttribute('data-id') || '',
-                        area_text:  el.querySelector('.area')?.textContent || '',
-                        price_text: el.querySelector('.price, .total-price')?.textContent || '',
-                        style_text: el.querySelector('.style, .tag-style')?.textContent || '',
-                        company:    el.querySelector('.company-name')?.textContent || '',
-                        year_text:  el.querySelector('.year, .date')?.textContent || '',
-                    })
-                """)
+                await page.goto(url, wait_until=wait_until, timeout=timeout)
+                await async_human_delay(0.8, 1.8)
+                return True, ""
+            except Exception as e:
+                last_error = str(e)
+                print(f"[土巴兔] 访问失败({attempt}/{retries}): {url} | {last_error}")
+                await async_human_delay(1.0, 2.0)
+        return False, last_error
 
-                case = self._parse_case_data(data)
-                if case.total_price > 0 and case.area > 0:
-                    cases.append(case)
+    async def _parse_case_list(self, page) -> list[dict]:
+        return await page.evaluate("""
+            (limit) => {
+                const out = [];
+                const seen = new Set();
+                const cards = Array.from(document.querySelectorAll('.xmp_container .item'));
+                const candidates = cards.length
+                    ? cards.map(card => ({
+                        card,
+                        anchor: card.querySelector('a.item_img[href*="/case/"], a.title[href*="/case/"]')
+                    }))
+                    : Array.from(document.querySelectorAll('a[href*="/case/"]'))
+                        .map(anchor => ({card: anchor.closest('li, .item, .case-item, .media-item, .list-item, .pic-li') || anchor.parentElement, anchor}));
 
-            except Exception:
-                continue
+                for (const {card, anchor: a} of candidates) {
+                    if (!a) continue;
+                    const rawHref = a.getAttribute('href') || '';
+                    let href = '';
+                    try { href = new URL(rawHref, location.href).href; } catch (e) { continue; }
 
-        return cases
+                    const isCompanyCase = /\\/zs\\/\\d+\\/case\\/\\d+\\.html/.test(href);
+                    const isXgtCase = /xiaoguotu\\.to8to\\.com\\/case\\/zxanli\\/t\\d+\\.html/.test(href);
+                    if (!isCompanyCase && !isXgtCase) continue;
+
+                    const match = href.match(/\\/case\\/(?:zxanli\\/t)?(\\d+)\\.html/);
+                    const caseId = match ? match[1] : href;
+                    if (seen.has(caseId)) continue;
+                    seen.add(caseId);
+
+                    const text = (card ? card.innerText : a.innerText || '').replace(/\\s+/g, ' ').trim();
+                    out.push({case_id: caseId, url: href, list_text: text});
+                    if (out.length >= limit) break;
+                }
+                return out;
+            }
+        """, self.CASES_PER_PAGE_LIMIT)
+
+    async def _fetch_case_detail(self, page, item: dict) -> Optional[RenovationCase]:
+        url = item.get("url", "")
+        success, err = await self._goto(
+            page,
+            url,
+            retries=2,
+            wait_until="domcontentloaded",
+            timeout=45_000,
+        )
+        if not success:
+            print(f"[土巴兔] 详情页失败: {url} | {err}")
+            fallback = self._parse_case_data({
+                "case_id": item.get("case_id", ""),
+                "source_url": url,
+                "list_text": item.get("list_text", ""),
+            })
+            return fallback if fallback.area > 0 and fallback.total_price > 0 else None
+
+        try:
+            raw = await page.evaluate("""
+                () => {
+                    const desc = document.querySelector('.case-desc');
+                    const bodyText = (desc ? desc.innerText : document.body.innerText || '')
+                        .replace(/\\s+/g, ' ').trim();
+                    const metaDesc = document.querySelector('meta[name="description"]')?.content || '';
+                    const title = document.title || '';
+                    const company = document.querySelector('.company-name, .name, .company-title')?.innerText || '';
+                    return {body_text: bodyText, meta_desc: metaDesc, title, company};
+                }
+            """)
+        except Exception as e:
+            print(f"[土巴兔] 详情解析失败: {url} | {e}")
+            return None
+
+        raw.update({
+            "case_id": item.get("case_id", ""),
+            "source_url": url,
+            "list_text": item.get("list_text", ""),
+        })
+        case = self._parse_case_data(raw)
+        return case if case.area > 0 and case.total_price > 0 else None
 
     def _parse_case_data(self, raw: dict) -> RenovationCase:
         case = RenovationCase(city=self.city)
         case.case_id = raw.get("case_id", "")
+        case.source_url = raw.get("source_url", "")
+        text = " ".join([
+            raw.get("body_text", ""),
+            raw.get("meta_desc", ""),
+            raw.get("title", ""),
+            raw.get("list_text", ""),
+        ])
 
-        area_match = re.search(r"(\d+\.?\d*)", raw.get("area_text", ""))
+        area_match = (
+            re.search(r"面积[:：]?\s*(\d+\.?\d*)\s*(?:㎡|m²|平)", text)
+            or re.search(r"(\d+\.?\d*)\s*(?:㎡|m²|平)", text)
+        )
         if area_match:
             case.area = float(area_match.group(1))
 
-        price_text = raw.get("price_text", "")
-        price_match = re.search(r"(\d+\.?\d*)\s*万", price_text)
+        price_match = (
+            re.search(r"造价[:：]?\s*(\d+\.?\d*)\s*万元?", text)
+            or re.search(r"(\d+\.?\d*)\s*万元?", text)
+        )
         if price_match:
             case.total_price = float(price_match.group(1)) * 10000
         else:
+            price_text = raw.get("price_text", "")
             price_match = re.search(r"(\d+)", price_text.replace(",", ""))
             if price_match:
                 case.total_price = float(price_match.group(1))
@@ -165,10 +307,15 @@ class TubatuScraper:
         if case.area > 0 and case.total_price > 0:
             case.unit_price = case.total_price / case.area
 
-        case.style   = raw.get("style_text", "").strip()
+        style_match = re.search(r"风格[:：]?\s*([\u4e00-\u9fa5A-Za-z0-9]+)", text)
+        case.style = (style_match.group(1) if style_match else raw.get("style_text", "")).strip()
         case.company = raw.get("company", "").strip()
 
-        year_match = re.search(r"(20\d{2})", raw.get("year_text", ""))
+        duration_match = re.search(r"装修工期[:：]?\s*(\d+)\s*天", text)
+        if duration_match:
+            case.duration_days = int(duration_match.group(1))
+
+        year_match = re.search(r"(20\d{2})", raw.get("year_text", "") or text)
         if year_match:
             case.year = int(year_match.group(1))
 
@@ -304,12 +451,14 @@ class TubatuScraper:
         summary = summary.reindex([l for l in level_order if l in summary.index])
         return summary
 
-    def _get_area_code(self, area_range: tuple) -> str:
+    def _get_area_codes(self, area_range: tuple) -> list[str]:
         target_min, target_max = area_range
-        for (code_min, code_max), code in self.AREA_CODE_MAP.items():
-            if code_min <= target_min and target_max <= code_max:
-                return code
-        return "3"
+        codes = [
+            code
+            for code_min, code_max, code in self.AREA_BUCKETS
+            if max(target_min, code_min) <= min(target_max, code_max)
+        ]
+        return codes or ["3"]
 
 
 if __name__ == "__main__":

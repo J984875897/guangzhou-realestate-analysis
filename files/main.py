@@ -98,7 +98,9 @@ async def run_full_pipeline():
         districts=CONFIG["districts"]
     )
 
-    if beike_df.empty or len(beike_df) < 10:
+    beike_scraped_count = len(beike_df)
+    beike_is_mock = beike_df.empty or len(beike_df) < 10
+    if beike_is_mock:
         print(f"[警告] 贝壳买房数据量不足（{len(beike_df)} 条），使用模拟数据继续...")
         beike_df = _mock_beike_data()
     else:
@@ -118,7 +120,15 @@ async def run_full_pipeline():
 
     tubatu = TubatuScraper(city=CONFIG["city"])
     cases  = await tubatu.scrape_cases(area_range=CONFIG["area_range"], pages=5)
-    cases_df     = TubatuScraper.cases_to_dataframe(cases) if cases else _mock_tubatu_data()
+    tubatu_stats = getattr(tubatu, "last_case_stats", {}) or {}
+    if cases:
+        cases_df = TubatuScraper.cases_to_dataframe(cases)
+        reno_data_source = "to8to_real"
+        print(f"[Step 2] ✓ 土巴兔真实案例采集成功：{len(cases_df)} 条")
+    else:
+        cases_df = _mock_tubatu_data()
+        reno_data_source = "mock_fallback"
+        print("[Step 2] ⚠ 土巴兔真实采集失败，已使用模拟装修数据兜底")
     reno_summary = TubatuScraper.summarize_by_level(cases_df)
 
     save_path = CONFIG["output_dir"] / f"tubatu_cases_{timestamp}.csv"
@@ -139,7 +149,9 @@ async def run_full_pipeline():
         districts=CONFIG["districts"]
     )
 
-    if rent_df.empty or len(rent_df) < 10:
+    rent_scraped_count = len(rent_df)
+    rent_is_mock = rent_df.empty or len(rent_df) < 10
+    if rent_is_mock:
         print(f"[警告] 租房数据量不足（{len(rent_df)} 条），使用估算值继续（租售比分析精度受影响）...")
         rent_df = _mock_rent_data()
     else:
@@ -158,6 +170,31 @@ async def run_full_pipeline():
     clean_df = clean_house_data(beike_df) if "unit_price" in beike_df.columns else beike_df
     print(f"[Step 4] ✓ 清洗后 {len(clean_df)} 条（去除异常值 {len(beike_df)-len(clean_df)} 条）\n")
 
+    data_source_info = {
+        "house": {
+            "name":    "贝壳买房",
+            "is_mock": beike_is_mock,
+            "scraped": beike_scraped_count,
+            "success": len(clean_df),
+            "failed":  (beike_scraped_count - len(clean_df)) if not beike_is_mock else 0,
+        },
+        "rent": {
+            "name":    "贝壳租房",
+            "is_mock": rent_is_mock,
+            "scraped": rent_scraped_count,
+            "success": len(rent_df),
+            "failed":  0,
+        },
+        "reno": {
+            "name":           "土巴兔",
+            "is_mock":        reno_data_source == "mock_fallback",
+            "total_cases":    int(len(cases_df)),
+            "success_pages":  int(tubatu_stats.get("success_pages", 0)),
+            "failed_pages":   int(tubatu_stats.get("failed_pages", 0)),
+            "detail_success": int(tubatu_stats.get("detail_success", 0)),
+            "detail_failed":  int(tubatu_stats.get("detail_failed", 0)),
+        },
+    }
 
     # ------------------------------------------------------------------
     # Step 5：计算租售比
@@ -242,19 +279,32 @@ async def run_full_pipeline():
         }
 
     # ------------------------------------------------------------------
+    # Step 6.5：敏感性分析
+    # ------------------------------------------------------------------
+    from models.sensitivity import run_sensitivity
+    sensitivity_results = run_sensitivity(
+        base_total_price  = total_price,
+        dcf_params        = CONFIG["dcf_params"],
+        business_modes    = BUSINESS_MODES,
+        terminal_cap_base = 0.04,
+    )
+
+    # ------------------------------------------------------------------
     # Step 7：可视化图表（基础 6 张）
     # ------------------------------------------------------------------
     print("\n[Step 7/10] 生成基础可视化图表...")
 
     chart_paths = generate_all_charts(
-        house_df        = clean_df,
-        rent_df         = rent_df,
-        reno_summary    = reno_summary,
-        dcf_results     = results,
-        dcf_params      = CONFIG["dcf_params"],
-        output_dir      = CONFIG["output_dir"] / "charts",
-        no_loan_results = no_loan_results,
-        owned_results   = owned_results,
+        house_df            = clean_df,
+        rent_df             = rent_df,
+        reno_summary        = reno_summary,
+        dcf_results         = results,
+        dcf_params          = CONFIG["dcf_params"],
+        output_dir          = CONFIG["output_dir"] / "charts",
+        no_loan_results     = no_loan_results,
+        owned_results       = owned_results,
+        sensitivity_results = sensitivity_results,
+        data_source_info    = data_source_info,
     )
 
 
@@ -338,18 +388,20 @@ async def run_full_pipeline():
     print("\n生成地理分布和回归分析图表...")
 
     extra_paths = generate_all_charts(
-        house_df           = clean_df,
-        rent_df            = rent_df,
-        reno_summary       = reno_summary,
-        dcf_results        = results,
-        dcf_params         = CONFIG["dcf_params"],
-        output_dir         = CONFIG["output_dir"] / "charts",
-        geo_df             = geo_df,
-        metro_df           = metro_df,
-        school_df          = school_df,
-        regression_results = regression_results,
-        no_loan_results    = no_loan_results,
-        owned_results      = owned_results,
+        house_df            = clean_df,
+        rent_df             = rent_df,
+        reno_summary        = reno_summary,
+        dcf_results         = results,
+        dcf_params          = CONFIG["dcf_params"],
+        output_dir          = CONFIG["output_dir"] / "charts",
+        geo_df              = geo_df,
+        metro_df            = metro_df,
+        school_df           = school_df,
+        regression_results  = regression_results,
+        no_loan_results     = no_loan_results,
+        owned_results       = owned_results,
+        sensitivity_results = sensitivity_results,
+        data_source_info    = data_source_info,
     )
     chart_paths.update(extra_paths)
 
@@ -415,6 +467,13 @@ async def run_full_pipeline():
         "best_owned_monthly_wan":  (round(best_owned_noi / 12 / 10000, 2) if best_owned_noi is not None else None),
         "best_owned_cap_rate_pct": (round(best_owned_cap * 100, 2) if best_owned_cap is not None else None),
         "has_owned":               (CONFIG["output_dir"] / "charts/已持有NOI对比.html").exists(),
+        "has_sensitivity":         (CONFIG["output_dir"] / "charts/敏感性分析表.html").exists(),
+        "reno_data_source":        reno_data_source,
+        "reno_case_count":         int(len(cases_df)),
+        "reno_success_pages":      int(tubatu_stats.get("success_pages", 0)),
+        "reno_failed_pages":       int(tubatu_stats.get("failed_pages", 0)),
+        "reno_detail_success":     int(tubatu_stats.get("detail_success", 0)),
+        "reno_detail_failed":      int(tubatu_stats.get("detail_failed", 0)),
     }
     (CONFIG["output_dir"] / "summary.json").write_text(
         json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8"

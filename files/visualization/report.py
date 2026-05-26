@@ -76,6 +76,13 @@ def _default_summary() -> dict:
         "best_owned_monthly_wan":  None,
         "best_owned_cap_rate_pct": None,
         "has_owned":               False,
+        "has_sensitivity":         False,
+        "reno_data_source":        "unknown",
+        "reno_case_count":         0,
+        "reno_success_pages":      0,
+        "reno_failed_pages":       0,
+        "reno_detail_success":     0,
+        "reno_detail_failed":      0,
     }
 
 
@@ -223,6 +230,13 @@ def generate_dashboard(output_dir: Path) -> Path:
     best_owned_monthly_wan = summary.get("best_owned_monthly_wan")   # None 或 float
     best_owned_cap_pct     = summary.get("best_owned_cap_rate_pct")  # None 或 float
     has_owned              = summary.get("has_owned", False)
+    has_sensitivity        = summary.get("has_sensitivity", False)
+    reno_data_source       = summary.get("reno_data_source", "unknown")
+    reno_case_count        = summary.get("reno_case_count", 0) or 0
+    reno_success_pages     = summary.get("reno_success_pages", 0) or 0
+    reno_failed_pages      = summary.get("reno_failed_pages", 0) or 0
+    reno_detail_success    = summary.get("reno_detail_success", 0) or 0
+    reno_detail_failed     = summary.get("reno_detail_failed", 0) or 0
     gen_time            = summary.get("generated_at", datetime.now().strftime("%Y-%m-%d %H:%M"))
     default_mv          = int(round(avg_price_wan * 90)) if avg_price_wan else 307
 
@@ -286,8 +300,23 @@ def generate_dashboard(output_dir: Path) -> Path:
     # ------------------------------------------------------------------
     # 5. Section 3：装修成本
     # ------------------------------------------------------------------
+    if reno_data_source == "to8to_real":
+        reno_note = (
+            f"数据来源：土巴兔当前整屋案例入口（xiaoguotu.to8to.com），"
+            f"采集 {reno_case_count} 条；列表页成功 {reno_success_pages} 页，失败 {reno_failed_pages} 页；"
+            f"详情页成功 {reno_detail_success} 条，失败 {reno_detail_failed} 条。"
+        )
+    elif reno_data_source == "mock_fallback":
+        reno_note = (
+            f"数据来源：模拟兜底。土巴兔当前入口未采集到可用真实案例，"
+            f"本节仅用于流程演示和图表占位。"
+        )
+    else:
+        reno_note = "数据来源：未记录。"
+
     sec3 = (
         '<div class="section"><h2>装修成本参考</h2>'
+        f'<p style="font-size:13px;color:#666;margin-bottom:16px">{reno_note}</p>'
         '<div class="chart-row">'
         + _chart_block("装修档次综合单价与工期",
                        _iframe(charts_dir, "装修成本对比", height=400),
@@ -455,7 +484,31 @@ def generate_dashboard(output_dir: Path) -> Path:
     )
 
     # ------------------------------------------------------------------
-    # 8. 拼装完整 HTML
+    # 10. Section 9：敏感性分析（有图表才渲染）
+    # ------------------------------------------------------------------
+    if has_sensitivity:
+        sec_sensitivity = (
+            '<div class="section"><h2>敏感性分析</h2>'
+            '<p style="font-size:13px;color:#666;margin-bottom:16px">'
+            '各关键参数对 IRR / NPV 的敏感程度。折现率行显示 NPV（万元）；'
+            '其余行显示 IRR（%）。龙卷图以民宿模式为基准，展示参数区间对 IRR 的影响幅度。'
+            '</p>'
+            '<div class="chart-row">'
+            + _chart_block("IRR / NPV 敏感性分析表",
+                           _iframe(charts_dir, "敏感性分析表", height=620),
+                           full_width=True)
+            + '</div>'
+            '<div class="chart-row" style="margin-top:16px">'
+            + _chart_block("IRR 敏感性龙卷图（民宿基准）",
+                           _iframe(charts_dir, "敏感性龙卷图", height=440),
+                           full_width=True)
+            + '</div></div>'
+        )
+    else:
+        sec_sensitivity = ""
+
+    # ------------------------------------------------------------------
+    # 11. 拼装完整 HTML
     # ------------------------------------------------------------------
     sec_calc = _calculator_section(default_mv)
     html = f"""<!DOCTYPE html>
@@ -481,6 +534,7 @@ def generate_dashboard(output_dir: Path) -> Path:
     {sec_owned}
     {sec5}
     {sec6}
+    {sec_sensitivity}
     {sec_calc}
   </div>
 
