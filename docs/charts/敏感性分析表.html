@@ -1,0 +1,225 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Hiragino Sans GB',
+               'Microsoft YaHei', sans-serif;
+  background: #fff; padding: 12px 16px 16px;
+}
+table {
+  width: 100%; border-collapse: collapse; font-size: 13px;
+  border: 1px solid #dde0f0; border-radius: 6px; overflow: hidden;
+}
+thead tr th {
+  background: #3949ab; color: #fff; font-weight: 600;
+  padding: 11px 14px; text-align: center; font-size: 13px; white-space: nowrap;
+}
+thead tr th.col-lbl {
+  text-align: left; width: 15%; border-right: 1px solid rgba(255,255,255,0.2);
+}
+tr.grp td {
+  background: #e8eaf6; color: #1a237e; font-weight: 700;
+  padding: 8px 14px; font-size: 12.5px;
+  border-top: 2px solid #9fa8da; border-bottom: 1px solid #c5cae9;
+}
+tbody tr.grp:first-child td { border-top: none; }
+.g-note { font-size: 11px; font-weight: 400; color: #5c6bc0; margin-left: 10px; }
+tr.row td {
+  padding: 7px 14px; text-align: center;
+  border-bottom: 1px solid #f0f0f0; vertical-align: middle;
+}
+tr.row td.lbl {
+  text-align: left; font-weight: 600; color: #444; font-size: 12.5px;
+  border-right: 1px solid #e8eaf6; white-space: nowrap; padding-left: 18px;
+}
+tr.row.base { background: #fffde7; }
+tr.row.base td.lbl { color: #1565c0; }
+tr.row:hover { background: rgba(57,73,171,0.04); }
+tr.row.base:hover { background: #fff9c4; }
+.val {
+  display: inline-block; padding: 3px 10px; border-radius: 4px;
+  font-weight: 600; font-size: 12.5px; min-width: 68px; text-align: center;
+}
+.note { font-size: 11px; color: #999; margin-top: 10px; line-height: 1.6; }
+</style>
+</head>
+<body>
+<table>
+  <thead><tr><th class="col-lbl">参数值</th><th>整租 IRR / NPV</th><th>民宿 IRR / NPV</th><th>隔断分租 IRR / NPV</th></tr></thead>
+  <tbody>
+    <tr class="grp"><td colspan="4"><span class="g-name">出租率</span><span class="g-note">IRR（%）</span></td></tr>
+    <tr class="row">
+      <td class="lbl">50%</td>
+      <td><span class="val" style="background:#F8F9FA;color:#333333">—</span></td>
+      <td><span class="val" style="background:#F8F9FA;color:#333333">—</span></td>
+      <td><span class="val" style="background:rgb(215, 48, 39);color:white">-4.09%</span></td>
+    </tr>
+    <tr class="row">
+      <td class="lbl">60%</td>
+      <td><span class="val" style="background:rgb(165, 0, 38);color:white">-4.68%</span></td>
+      <td><span class="val" style="background:rgb(171, 6, 38);color:white">-4.62%</span></td>
+      <td><span class="val" style="background:rgb(255, 241, 168);color:#333333">-1.97%</span></td>
+    </tr>
+    <tr class="row">
+      <td class="lbl">70%</td>
+      <td><span class="val" style="background:rgb(253, 174, 97);color:#333333">-2.89%</span></td>
+      <td><span class="val" style="background:rgb(253, 190, 110);color:#333333">-2.71%</span></td>
+      <td><span class="val" style="background:rgb(135, 203, 103);color:#333333">-0.23%</span></td>
+    </tr>
+    <tr class="row">
+      <td class="lbl">80%</td>
+      <td><span class="val" style="background:rgb(235, 246, 163);color:#333333">-1.39%</span></td>
+      <td><span class="val" style="background:rgb(216, 239, 138);color:#333333">-1.10%</span></td>
+      <td><span class="val" style="background:rgb(0, 104, 55);color:white">1.27%</span></td>
+    </tr>
+    <tr class="grp"><td colspan="4"><span class="g-name">租金单价</span><span class="g-note">IRR（%）</span></td></tr>
+    <tr class="row">
+      <td class="lbl">-20%</td>
+      <td><span class="val" style="background:rgb(254, 225, 141);color:#333333">-1.96%</span></td>
+      <td><span class="val" style="background:rgb(165, 0, 38);color:white">-6.46%</span></td>
+      <td><span class="val" style="background:rgb(221, 241, 145);color:#333333">0.09%</span></td>
+    </tr>
+    <tr class="row">
+      <td class="lbl">-10%</td>
+      <td><span class="val" style="background:rgb(246, 251, 179);color:#333333">-0.65%</span></td>
+      <td><span class="val" style="background:rgb(226, 71, 49);color:white">-4.94%</span></td>
+      <td><span class="val" style="background:rgb(161, 215, 105);color:#333333">1.41%</span></td>
+    </tr>
+    <tr class="row base">
+      <td class="lbl">★ 基准</td>
+      <td><span class="val" style="background:rgb(203, 233, 130);color:#333333">0.51%</span></td>
+      <td><span class="val" style="background:rgb(249, 145, 84);color:#333333">-3.62%</span></td>
+      <td><span class="val" style="background:rgb(91, 184, 96);color:#333333">2.59%</span></td>
+    </tr>
+    <tr class="row">
+      <td class="lbl">+10%</td>
+      <td><span class="val" style="background:rgb(153, 211, 105);color:#333333">1.56%</span></td>
+      <td><span class="val" style="background:rgb(254, 204, 122);color:#333333">-2.45%</span></td>
+      <td><span class="val" style="background:rgb(23, 147, 77);color:white">3.67%</span></td>
+    </tr>
+    <tr class="row">
+      <td class="lbl">+20%</td>
+      <td><span class="val" style="background:rgb(97, 186, 98);color:#333333">2.51%</span></td>
+      <td><span class="val" style="background:rgb(255, 241, 168);color:#333333">-1.40%</span></td>
+      <td><span class="val" style="background:rgb(0, 104, 55);color:white">4.66%</span></td>
+    </tr>
+    <tr class="grp"><td colspan="4"><span class="g-name">租金年增长</span><span class="g-note">IRR（%）</span></td></tr>
+    <tr class="row">
+      <td class="lbl">基准-2pp</td>
+      <td><span class="val" style="background:rgb(246, 122, 73);color:#333333">-3.20%</span></td>
+      <td><span class="val" style="background:#F8F9FA;color:#333333">—</span></td>
+      <td><span class="val" style="background:rgb(255, 254, 190);color:#333333">-0.02%</span></td>
+    </tr>
+    <tr class="row">
+      <td class="lbl">基准-1pp</td>
+      <td><span class="val" style="background:rgb(254, 218, 134);color:#333333">-1.27%</span></td>
+      <td><span class="val" style="background:rgb(165, 0, 38);color:white">-5.71%</span></td>
+      <td><span class="val" style="background:rgb(226, 243, 151);color:#333333">0.88%</span></td>
+    </tr>
+    <tr class="row base">
+      <td class="lbl">★ 基准</td>
+      <td><span class="val" style="background:rgb(238, 248, 168);color:#333333">0.51%</span></td>
+      <td><span class="val" style="background:rgb(239, 99, 62);color:#333333">-3.62%</span></td>
+      <td><span class="val" style="background:rgb(150, 210, 104);color:#333333">2.59%</span></td>
+    </tr>
+    <tr class="row">
+      <td class="lbl">基准+1pp</td>
+      <td><span class="val" style="background:rgb(172, 219, 110);color:#333333">2.17%</span></td>
+      <td><span class="val" style="background:rgb(253, 198, 117);color:#333333">-1.73%</span></td>
+      <td><span class="val" style="background:rgb(52, 164, 86);color:white">4.20%</span></td>
+    </tr>
+    <tr class="row">
+      <td class="lbl">基准+2pp</td>
+      <td><span class="val" style="background:rgb(82, 179, 94);color:#333333">3.74%</span></td>
+      <td><span class="val" style="background:rgb(255, 255, 191);color:#333333">0.01%</span></td>
+      <td><span class="val" style="background:rgb(0, 104, 55);color:white">5.73%</span></td>
+    </tr>
+    <tr class="grp"><td colspan="4"><span class="g-name">退出Cap Rate</span><span class="g-note">IRR（%）</span></td></tr>
+    <tr class="row">
+      <td class="lbl">基准-1pp</td>
+      <td><span class="val" style="background:rgb(97, 187, 98);color:#333333">2.36%</span></td>
+      <td><span class="val" style="background:rgb(253, 194, 113);color:#333333">-2.33%</span></td>
+      <td><span class="val" style="background:rgb(0, 104, 55);color:white">4.31%</span></td>
+    </tr>
+    <tr class="row base">
+      <td class="lbl">★ 基准</td>
+      <td><span class="val" style="background:rgb(206, 234, 132);color:#333333">0.51%</span></td>
+      <td><span class="val" style="background:rgb(245, 116, 70);color:#333333">-3.62%</span></td>
+      <td><span class="val" style="background:rgb(80, 178, 93);color:#333333">2.59%</span></td>
+    </tr>
+    <tr class="row">
+      <td class="lbl">基准+1pp</td>
+      <td><span class="val" style="background:rgb(255, 247, 178);color:#333333">-0.96%</span></td>
+      <td><span class="val" style="background:rgb(215, 48, 39);color:white">-4.74%</span></td>
+      <td><span class="val" style="background:rgb(168, 218, 108);color:#333333">1.25%</span></td>
+    </tr>
+    <tr class="row">
+      <td class="lbl">基准+2pp</td>
+      <td><span class="val" style="background:rgb(254, 201, 119);color:#333333">-2.19%</span></td>
+      <td><span class="val" style="background:rgb(165, 0, 38);color:white">-5.74%</span></td>
+      <td><span class="val" style="background:rgb(223, 241, 147);color:#333333">0.14%</span></td>
+    </tr>
+    <tr class="grp"><td colspan="4"><span class="g-name">折现率</span><span class="g-note">此行显示 NPV（万元），非 IRR</span></td></tr>
+    <tr class="row">
+      <td class="lbl">4.5%</td>
+      <td><span class="val" style="background:rgb(208, 235, 133);color:#333333">-68.1万</span></td>
+      <td><span class="val" style="background:rgb(207, 40, 39);color:white">-114.6万</span></td>
+      <td><span class="val" style="background:rgb(0, 104, 55);color:white">-34.8万</span></td>
+    </tr>
+    <tr class="row base">
+      <td class="lbl">★ 5.5%</td>
+      <td><span class="val" style="background:rgb(251, 253, 185);color:#333333">-77.3万</span></td>
+      <td><span class="val" style="background:rgb(188, 22, 38);color:white">-117.9万</span></td>
+      <td><span class="val" style="background:rgb(65, 171, 90);color:#333333">-48.0万</span></td>
+    </tr>
+    <tr class="row">
+      <td class="lbl">6.5%</td>
+      <td><span class="val" style="background:rgb(254, 233, 154);color:#333333">-84.6万</span></td>
+      <td><span class="val" style="background:rgb(174, 9, 38);color:white">-120.3万</span></td>
+      <td><span class="val" style="background:rgb(149, 209, 104);color:#333333">-58.6万</span></td>
+    </tr>
+    <tr class="row">
+      <td class="lbl">7.5%</td>
+      <td><span class="val" style="background:rgb(254, 206, 124);color:#333333">-90.3万</span></td>
+      <td><span class="val" style="background:rgb(165, 0, 38);color:white">-121.9万</span></td>
+      <td><span class="val" style="background:rgb(202, 233, 129);color:#333333">-67.1万</span></td>
+    </tr>
+    <tr class="grp"><td colspan="4"><span class="g-name">房价变动</span><span class="g-note">IRR（%）</span></td></tr>
+    <tr class="row base">
+      <td class="lbl">★ 基准</td>
+      <td><span class="val" style="background:rgb(255, 246, 176);color:#333333">0.51%</span></td>
+      <td><span class="val" style="background:rgb(165, 0, 38);color:white">-3.62%</span></td>
+      <td><span class="val" style="background:rgb(160, 214, 105);color:#333333">2.59%</span></td>
+    </tr>
+    <tr class="row">
+      <td class="lbl">-5%</td>
+      <td><span class="val" style="background:rgb(241, 249, 172);color:#333333">1.07%</span></td>
+      <td><span class="val" style="background:rgb(200, 34, 39);color:white">-3.00%</span></td>
+      <td><span class="val" style="background:rgb(118, 196, 101);color:#333333">3.17%</span></td>
+    </tr>
+    <tr class="row">
+      <td class="lbl">-10%</td>
+      <td><span class="val" style="background:rgb(215, 238, 138);color:#333333">1.67%</span></td>
+      <td><span class="val" style="background:rgb(228, 74, 51);color:white">-2.36%</span></td>
+      <td><span class="val" style="background:rgb(67, 172, 90);color:#333333">3.78%</span></td>
+    </tr>
+    <tr class="row">
+      <td class="lbl">-20%</td>
+      <td><span class="val" style="background:rgb(133, 203, 102);color:#333333">2.96%</span></td>
+      <td><span class="val" style="background:rgb(253, 174, 97);color:#333333">-1.00%</span></td>
+      <td><span class="val" style="background:rgb(0, 104, 55);color:white">5.13%</span></td>
+    </tr>
+  </tbody>
+</table>
+<p class="note">★ 基准情景。折现率行显示 NPV（万元），其余行显示 IRR（%）。
+颜色越绿 = 回报越高；越红 = 回报越低。</p>
+<script>
+  window.addEventListener('load', function() {
+    window.parent.postMessage({ sensitivityHeight: document.documentElement.scrollHeight }, '*');
+  });
+</script>
+</body>
+</html>
