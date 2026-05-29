@@ -2,3 +2,10 @@ __pycache__/
 *.pyc
 .DS_Store
 *.log
+
+# Cookie / 登录凭据
+files/scrapers/beike_session.json
+files/scrapers/browser_profile/
+
+# IDE 生成索引
+.codegraph/

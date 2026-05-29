@@ -1,17 +1,10 @@
 # =============================================================================
 # scrapers/beike_map_scraper.py
-# 贝壳二手房列表/地图接口批量采集房价
+# 贝壳二手房公开列表页批量采集房价
 #
 # 核心思路：
-#   贝壳找房的地图页（map.ke.com）在前端用 Ajax 调用内部 API，
-#   把地图上每个小区的位置和均价渲染成气泡。
-#   我们用 Playwright 打开地图页，拦截这些 Ajax 请求，
-#   直接拿 JSON 数据，比解析 HTML 稳定得多。
-#
-# 相比直接爬列表页的优势：
-#   1. 一次请求覆盖整个地图区域内所有小区（几十到几百个）
-#   2. 数据是结构化 JSON，不需要解析 HTML
-#   3. 地图接口更新频率低，不容易因页面改版而失效
+#   使用用户可直接访问的公开二手房列表页，避免依赖不稳定的地图内部接口。
+#   采集过程中遇到验证码/登录/访问受限页面时温和停止，并优先返回断点缓存。
 # =============================================================================
 
 import asyncio
@@ -19,13 +12,15 @@ import json
 import random
 import re
 from typing import Optional
+from pathlib import Path
 from urllib.parse import quote
 
 import pandas as pd
 
 from scrapers.browser_engine import (
     BrowserEngine, async_human_delay, human_scroll,
-    is_peak_hour, wait_for_peak_hour, load_session_cookies,
+    load_session_cookies, save_session_cookies,
+    BeikeAccessError, raise_for_beike_access_issue,
 )
 
 
@@ -60,6 +55,7 @@ CITY_CONFIG = {
 }
 
 BEIKE_MAP_API = "https://map.ke.com/proxyApi/i.o.selectByHouseStatus/json"
+CHECKPOINT_DIR = Path(__file__).parents[2] / "output" / "checkpoints"
 
 
 # =============================================================================
@@ -82,16 +78,23 @@ class BeikeMapScraper:
         self.config = CITY_CONFIG[city]
         self.captured_data = []
 
-    async def scrape_district(self, district: str, max_retries: int = 3) -> pd.DataFrame:
-        wait_for_peak_hour()
-
+    async def scrape_district(
+        self, district: str, max_retries: int = 3,
+        min_pages: int = 5, min_records: int = 150, max_pages: int = 100,
+    ) -> pd.DataFrame:
         for attempt in range(1, max_retries + 1):
             try:
                 print(f"[贝壳] 开始爬取 {self.city} - {district}（第{attempt}次尝试）")
-                result = await self._do_scrape(district)
+                result = await self._do_scrape(
+                    district, min_pages=min_pages, min_records=min_records, max_pages=max_pages,
+                )
                 if result is not None and len(result) > 0:
                     print(f"[贝壳] 成功获取 {len(result)} 个小区数据")
                     return result
+            except BeikeAccessError as e:
+                print(f"[贝壳] {e}")
+                print("[贝壳] !! 被验证码/登录页拦截，建议重新运行并加 --login 参数完成贝壳账号登录")
+                return pd.DataFrame()
             except Exception as e:
                 print(f"[贝壳] 第{attempt}次失败: {e}")
                 if attempt < max_retries:
@@ -102,7 +105,10 @@ class BeikeMapScraper:
         print(f"[贝壳] {max_retries}次重试后仍失败，返回空数据")
         return pd.DataFrame()
 
-    async def _do_scrape(self, district: str) -> Optional[pd.DataFrame]:
+    async def _do_scrape(
+        self, district: str,
+        min_pages: int = 5, min_records: int = 150, max_pages: int = 100,
+    ) -> Optional[pd.DataFrame]:
         self.captured_data = []
 
         async with BrowserEngine(headless=False, use_proxy=False) as engine:
@@ -110,46 +116,52 @@ class BeikeMapScraper:
             await load_session_cookies(context)
 
             try:
-                list_df = await self._fallback_list_scrape(page, engine, district)
-                if list_df is not None and not list_df.empty:
-                    return list_df
-
-                print("[贝壳] 二手房列表页未采到数据，尝试地图接口...")
-                await page.route(
-                    "**/proxyApi/i.o.selectByHouseStatus/**",
-                    self._intercept_api_response
+                return await self._fallback_list_scrape(
+                    page, engine, district,
+                    min_pages=min_pages, min_records=min_records, max_pages=max_pages,
                 )
-                await page.route(
-                    "**/map/ershoufang/**",
-                    self._intercept_listing_response
-                )
-
-                district_path = self._district_path(district)
-                map_url = f"{self.config['map_url']}ershoufang/{district_path}/"
-                success = await engine.goto(page, map_url)
-                if not success:
-                    return None
-
-                if not await self._wait_for_map_ready(page, map_url):
-                    return await self._fallback_list_scrape(page, engine, district)
-
-                await async_human_delay(2.0, 4.0)
-                await self._simulate_map_interaction(page)
-                await async_human_delay(3.0, 5.0)
-
-                if not self.captured_data:
-                    print("[贝壳] 没有拦截到 API 响应，尝试小区列表页解析...")
-                    return await self._fallback_list_scrape(page, engine, district)
-
-                return self._process_captured_data()
 
             finally:
+                await save_session_cookies(context)
                 await context.close()
 
     def _district_path(self, district: str) -> str:
         """贝壳 URL 使用拼音区划路径；未知区划时退回 URL 编码。"""
         district_paths = self.config.get("district_paths", {})
         return district_paths.get(district, quote(district, safe=""))
+
+    def _checkpoint_path(self, district: str) -> Path:
+        safe_name = f"beike_prices_{self.city}_{district}.csv".replace("/", "_")
+        return CHECKPOINT_DIR / safe_name
+
+    def _load_checkpoint(self, district: str) -> pd.DataFrame:
+        path = self._checkpoint_path(district)
+        if not path.exists():
+            return pd.DataFrame()
+        try:
+            df = pd.read_csv(path)
+            if not df.empty:
+                print(f"[贝壳] 发现断点缓存: {path.name} ({len(df)} 条)")
+            return df
+        except Exception as e:
+            print(f"[贝壳] 断点缓存读取失败: {path.name} | {e}")
+            return pd.DataFrame()
+
+    def _save_checkpoint(self, df: pd.DataFrame, district: str) -> None:
+        if df.empty:
+            return
+        CHECKPOINT_DIR.mkdir(parents=True, exist_ok=True)
+        path = self._checkpoint_path(district)
+        df.to_csv(path, index=False, encoding="utf-8-sig")
+
+    def _records_to_dataframe(self, records: list[dict]) -> pd.DataFrame:
+        if not records:
+            return pd.DataFrame()
+        df = pd.DataFrame(records)
+        df = df[df["unit_price"].notna() & (df["unit_price"] > 0)]
+        df = df.drop_duplicates(subset=["community_id", "house_title", "unit_price"])
+        df = df.sort_values("unit_price", ascending=False).reset_index(drop=True)
+        return df
 
     async def _wait_for_map_ready(self, page, expected_url: str) -> bool:
         try:
@@ -178,20 +190,31 @@ class BeikeMapScraper:
         page,
         engine,
         district: str,
-        pages: int = 5,
+        min_pages: int = 5,
+        min_records: int = 150,
+        max_pages: int = 100,
     ) -> Optional[pd.DataFrame]:
         """采集用户可正常打开的二手房搜索列表页。"""
-        records = []
+        checkpoint_df = self._load_checkpoint(district)
+        records = checkpoint_df.to_dict("records") if not checkpoint_df.empty else []
         keyword = quote(district, safe="")
 
-        for page_num in range(1, pages + 1):
+        page_num = 1
+        while page_num <= max_pages:
             page_part = "" if page_num == 1 else f"pg{page_num}"
             list_url = f"https://{self.config['city_code']}.ke.com/ershoufang/{page_part}rs{keyword}/"
-            print(f"[贝壳] 二手房列表页 {page_num}/{pages}: {list_url}")
+            print(f"[贝壳] 二手房列表页 {page_num} (已采集 {len(records)} 条): {list_url}")
 
             success = await engine.goto(page, list_url)
             if not success:
                 continue
+            try:
+                await raise_for_beike_access_issue(page, list_url)
+            except BeikeAccessError:
+                if records:
+                    print("[贝壳] 页面受限，返回已保存的断点缓存")
+                    return self._records_to_dataframe(records)
+                raise
 
             try:
                 await page.wait_for_selector(".sellListContent li, li.clear.LOGCLICKDATA", timeout=20_000)
@@ -260,15 +283,20 @@ class BeikeMapScraper:
                 except Exception:
                     continue
 
+            current_df = self._records_to_dataframe(records)
+            self._save_checkpoint(current_df, district)
             await async_human_delay(1.5, 3.0)
+
+            if page_num >= min_pages and len(records) >= min_records:
+                print(f"[贝壳] 已满足停止条件（{page_num} 页 / {len(records)} 条），停止采集")
+                break
+            page_num += 1
 
         if not records:
             return None
 
-        df = pd.DataFrame(records)
-        df = df[df["unit_price"].notna() & (df["unit_price"] > 0)]
-        df = df.drop_duplicates(subset=["community_id", "house_title", "unit_price"])
-        df = df.sort_values("unit_price", ascending=False).reset_index(drop=True)
+        df = self._records_to_dataframe(records)
+        self._save_checkpoint(df, district)
         return df
 
     def _extract_unit_price(self, text: str) -> float:
@@ -362,14 +390,19 @@ class BeikeMapScraper:
 # 多区域批量采集入口
 # =============================================================================
 
-async def batch_scrape_city(city: str, districts: list[str]) -> pd.DataFrame:
+async def batch_scrape_city(
+    city: str, districts: list[str],
+    min_pages: int = 5, min_records: int = 150, max_pages: int = 100,
+) -> pd.DataFrame:
     scraper = BeikeMapScraper(city=city)
     all_dfs = []
 
     for i, district in enumerate(districts):
         print(f"\n[进度] {i+1}/{len(districts)}：{district}")
 
-        df = await scraper.scrape_district(district)
+        df = await scraper.scrape_district(
+            district, min_pages=min_pages, min_records=min_records, max_pages=max_pages,
+        )
         if not df.empty:
             df["district"] = district
             all_dfs.append(df)

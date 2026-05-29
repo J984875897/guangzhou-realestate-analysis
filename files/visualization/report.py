@@ -490,12 +490,13 @@ def generate_dashboard(output_dir: Path) -> Path:
         sec_sensitivity = (
             '<div class="section"><h2>敏感性分析</h2>'
             '<p style="font-size:13px;color:#666;margin-bottom:16px">'
-            '各关键参数对 IRR / NPV 的敏感程度。折现率行显示 NPV（万元）；'
-            '其余行显示 IRR（%）。龙卷图以民宿模式为基准，展示参数区间对 IRR 的影响幅度。'
+            '各关键参数对 IRR / NPV 的敏感程度。新增租金年增长敏感性，用于观察长期增长假设'
+            '从保守到乐观变化时对三种模式 IRR 的影响；折现率行显示 NPV（万元），其余行显示 IRR（%）。'
+            '龙卷图以民宿模式为基准，展示参数区间对 IRR 的影响幅度。'
             '</p>'
             '<div class="chart-row">'
             + _chart_block("IRR / NPV 敏感性分析表",
-                           _iframe(charts_dir, "敏感性分析表", height=620),
+                           _iframe(charts_dir, "敏感性分析表", height=700),
                            full_width=True)
             + '</div>'
             '<div class="chart-row" style="margin-top:16px">'
@@ -659,36 +660,44 @@ _CALCULATOR_TEMPLATE = """<style>
             <th>模式</th>
             <th>月租<br>(元/㎡)</th>
             <th>出租率<br>(%)</th>
-            <th>运营<br>费率(%)</th>
-            <th>年增长<br>(%)</th>
-          </tr>
-        </thead>
-        <tbody>
+	            <th>运营<br>费率(%)</th>
+	            <th>年增长<br>(%)</th>
+	            <th>初始投入<br>(万)</th>
+	            <th>退出Cap<br>(%)</th>
+	          </tr>
+	        </thead>
+	        <tbody>
           <tr>
             <td>整租</td>
             <td><input type="number" id="c_rent_zt" value="55"  min="0" step="1"></td>
-            <td><input type="number" id="c_occ_zt"  value="95"  min="0" max="100" step="1"></td>
-            <td><input type="number" id="c_opex_zt" value="10"  min="0" max="100" step="0.5"></td>
-            <td><input type="number" id="c_gr_zt"   value="2"   min="0" step="0.1"></td>
-          </tr>
-          <tr>
-            <td>民宿</td>
-            <td><input type="number" id="c_rent_ms" value="110" min="0" step="1"></td>
-            <td><input type="number" id="c_occ_ms"  value="65"  min="0" max="100" step="1"></td>
-            <td><input type="number" id="c_opex_ms" value="25"  min="0" max="100" step="0.5"></td>
-            <td><input type="number" id="c_gr_ms"   value="4"   min="0" step="0.1"></td>
-          </tr>
-          <tr>
-            <td>隔断分租</td>
-            <td><input type="number" id="c_rent_gd" value="80"  min="0" step="1"></td>
-            <td><input type="number" id="c_occ_gd"  value="90"  min="0" max="100" step="1"></td>
-            <td><input type="number" id="c_opex_gd" value="15"  min="0" max="100" step="0.5"></td>
-            <td><input type="number" id="c_gr_gd"   value="1.5" min="0" step="0.1"></td>
-          </tr>
+	            <td><input type="number" id="c_occ_zt"  value="95"  min="0" max="100" step="1"></td>
+	            <td><input type="number" id="c_opex_zt" value="10"  min="0" max="100" step="0.5"></td>
+	            <td><input type="number" id="c_gr_zt"   value="2"   min="0" step="0.1"></td>
+	            <td><input type="number" id="c_capex_zt" value="0" min="0" step="1"></td>
+	            <td><input type="number" id="c_tc_zt"    value="4" min="0.5" step="0.1"></td>
+	          </tr>
+	          <tr>
+	            <td>民宿</td>
+	            <td><input type="number" id="c_rent_ms" value="110" min="0" step="1"></td>
+	            <td><input type="number" id="c_occ_ms"  value="65"  min="0" max="100" step="1"></td>
+	            <td><input type="number" id="c_opex_ms" value="40"  min="0" max="100" step="0.5"></td>
+	            <td><input type="number" id="c_gr_ms"   value="2"   min="0" step="0.1"></td>
+	            <td><input type="number" id="c_capex_ms" value="9" min="0" step="1"></td>
+	            <td><input type="number" id="c_tc_ms"    value="6" min="0.5" step="0.1"></td>
+	          </tr>
+	          <tr>
+	            <td>隔断分租</td>
+	            <td><input type="number" id="c_rent_gd" value="80"  min="0" step="1"></td>
+	            <td><input type="number" id="c_occ_gd"  value="90"  min="0" max="100" step="1"></td>
+	            <td><input type="number" id="c_opex_gd" value="15"  min="0" max="100" step="0.5"></td>
+	            <td><input type="number" id="c_gr_gd"   value="1.5" min="0" step="0.1"></td>
+	            <td><input type="number" id="c_capex_gd" value="0" min="0" step="1"></td>
+	            <td><input type="number" id="c_tc_gd"    value="4" min="0.5" step="0.1"></td>
+	          </tr>
         </tbody>
       </table>
       <p style="font-size:11px;color:#aaa;margin-top:10px">
-        月租金 = 每平米每月租金。年租金 = 面积 × 月租 × 12 × 出租率 × (1 - 运营费率)
+	        月租金 = 每平米每月租金。年租金 = 面积 × 月租 × 12 × 出租率 × (1 - 运营费率)
       </p>
     </div>
   </div>
@@ -747,7 +756,7 @@ _CALCULATOR_TEMPLATE = """<style>
       <div class="rec-body"  id="r_rec_body">—</div>
     </div>
     <p class="calc-note">
-      * IRR 以当前市场估值为初始机会成本，终值资本化率取 4%。计算结果仅供参考，不构成投资建议。
+	      * IRR 以当前市场估值和初始投入为机会成本，各模式可单独设置退出资本化率。计算结果仅供参考，不构成投资建议。
     </p>
   </div>
 </div>
@@ -797,9 +806,7 @@ function calcInvestment() {
   var mtg  = parseFloat(document.getElementById('c_mtg').value)  || 0;
   var dr   = (parseFloat(document.getElementById('c_dr').value)  || 5.5) / 100;
   var yrs  = parseInt(document.getElementById('c_yrs').value)    || 20;
-  var tc   = 0.04;
-
-  var modes   = ['整租','民宿','隔断分租'];
+	  var modes   = ['整租','民宿','隔断分租'];
   var modeIds = ['zt','ms','gd'];
   var results = {};
 
@@ -809,9 +816,11 @@ function calcInvestment() {
     var occ  = (parseFloat(document.getElementById('c_occ_'+id).value)  || 0) / 100;
     var opex = (parseFloat(document.getElementById('c_opex_'+id).value) || 0) / 100;
     var gr   = (parseFloat(document.getElementById('c_gr_'+id).value)   || 0) / 100;
+    var capex = (parseFloat(document.getElementById('c_capex_'+id).value) || 0) * 10000;
+    var tc = ((parseFloat(document.getElementById('c_tc_'+id).value) || 4) / 100) || 0.04;
     var annMtg = mtg * 12;
 
-    var cfs = [-(mv * 10000)];
+    var cfs = [-(mv * 10000 + capex)];
     var cumNet = 0;
     for (var y = 1; y <= yrs; y++) {
       var noi = sqm * rsqm * 12 * occ * Math.pow(1+gr, y-1) * (1-opex);
@@ -823,12 +832,12 @@ function calcInvestment() {
 
     var y1noi = sqm * rsqm * 12 * occ * (1-opex);
     results[modes[i]] = {
-      y1noi:     y1noi / 10000,
-      monthlyCF: (y1noi - annMtg) / 12,
-      capRate:   y1noi / (mv * 10000) * 100,
-      irr:       _irr(cfs),
-      cumNet:    cumNet / 10000
-    };
+	      y1noi:     y1noi / 10000,
+	      monthlyCF: (y1noi - annMtg) / 12,
+	      capRate:   y1noi / (mv * 10000) * 100,
+	      irr:       _irr(cfs),
+	      cumNet:    (cumNet - capex) / 10000
+	    };
     if (results[modes[i]].irr !== null) results[modes[i]].irr *= 100;
   }
 

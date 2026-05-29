@@ -18,11 +18,13 @@ def calc_dcf(
     discount_rate,
     years=20,
     terminal_cap=0.04,
+    initial_capex=0.0,
 ) -> dict:
     """
     计算房产投资的 DCF 估值。
 
-    返回 dict 含：npv, irr, cash_flows, monthly_mortgage, terminal_value
+    返回 dict 含：npv, irr, cash_flows, monthly_mortgage, terminal_value 等。
+    initial_capex 用于软装、家具家电、开办费等第0期额外投入。
     """
 
     # 月供（等额还款）
@@ -52,15 +54,17 @@ def calc_dcf(
     # 注意：discount_rate > terminal_cap 时公式有效；此处直接用 cap rate 更稳健
     terminal_value = last_noi * (1 + rent_growth) / terminal_cap
 
-    # NPV：年度现金流折现 + 终值折现
-    npv = sum(
+    initial_investment = total_price * down_pct + initial_capex
+
+    # NPV：第0期现金投入 + 年度现金流折现 + 终值折现
+    npv = -initial_investment + sum(
         cf / (1 + discount_rate) ** y
         for y, cf in enumerate(cash_flows, 1)
     )
     npv += terminal_value / (1 + discount_rate) ** years
 
-    # IRR：第0期投入首付，最后一期加回资产残值（模拟出售回款）
-    irr_flows = [-total_price * down_pct] + cash_flows
+    # IRR：第0期投入首付和初始改造/软装，最后一期加回资产残值（模拟出售回款）
+    irr_flows = [-initial_investment] + cash_flows
     irr_flows[-1] += terminal_value
 
     if hasattr(np, 'irr'):
@@ -74,6 +78,9 @@ def calc_dcf(
         "cash_flows":       cash_flows,
         "monthly_mortgage": monthly_mortgage,
         "terminal_value":   terminal_value,
+        "terminal_cap":     terminal_cap,
+        "initial_capex":    initial_capex,
+        "initial_investment": initial_investment,
     }
 
 

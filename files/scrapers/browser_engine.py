@@ -1,6 +1,6 @@
 # =============================================================================
 # scrapers/browser_engine.py
-# Playwright 浏览器引擎 —— 反爬核心模块
+# Playwright 浏览器引擎 —— 浏览器复用与访问状态检测
 # =============================================================================
 
 import asyncio
@@ -18,6 +18,57 @@ from playwright.async_api import (
 )
 
 
+class BeikeAccessError(RuntimeError):
+    """贝壳页面进入登录/验证码/不可用状态时抛出，避免无意义重试。"""
+
+
+async def detect_beike_page_state(page: Page) -> str:
+    """返回 normal / captcha / login / not_found / blocked，用于温和停止采集。"""
+    url = page.url
+    if "hip.ke.com/captcha" in url or "captcha" in url:
+        return "captcha"
+    if "login" in url or "passport" in url:
+        return "login"
+
+    try:
+        title = await page.title()
+    except Exception:
+        title = ""
+
+    body_text = ""
+    try:
+        body_text = (await page.locator("body").inner_text(timeout=2_000)).strip()
+    except Exception:
+        pass
+
+    page_text = f"{title}\n{body_text}"
+    if "未找到页面" in page_text or "网址失效" in page_text:
+        return "not_found"
+    if "访问过于频繁" in page_text or "安全验证" in page_text or "异常访问" in page_text:
+        return "blocked"
+    if "登录" in page_text and ("验证码" in page_text or "手机号" in page_text):
+        return "login"
+    return "normal"
+
+
+async def raise_for_beike_access_issue(page: Page, url: str) -> None:
+    state = await detect_beike_page_state(page)
+    if state == "normal":
+        return
+
+    if state in ("captcha", "login"):
+        print(f"\n[贝壳] 检测到 {state} 页面，请在弹出的浏览器窗口中手动处理（完成验证码或手机号登录）")
+        print("[贝壳] 处理完成后回到终端，按 Enter 继续采集...")
+        loop = asyncio.get_event_loop()
+        await loop.run_in_executor(None, input, "")
+        state = await detect_beike_page_state(page)
+        if state == "normal":
+            print("[贝壳] 已恢复正常，继续采集\n")
+            return
+
+    raise BeikeAccessError(f"贝壳页面状态为 {state}，停止本次采集: {url} -> {page.url}")
+
+
 # =============================================================================
 # 代理 IP 池
 # =============================================================================
@@ -32,31 +83,13 @@ def get_random_proxy() -> dict:
     return random.choice(PROXY_POOL)
 
 
-# =============================================================================
-# 非高峰时段检测
-# =============================================================================
-
-ALLOWED_HOURS = range(9, 22)
-
-def is_peak_hour() -> bool:
-    return datetime.now().hour in ALLOWED_HOURS
-
-def wait_for_peak_hour():
-    while not is_peak_hour():
-        current = datetime.now()
-        next_start = current.replace(hour=9, minute=0, second=0)
-        if current.hour >= 22:
-            next_start = next_start.replace(day=current.day + 1)
-        wait_seconds = (next_start - current).seconds
-        print(f"[调度] 当前 {current.strftime('%H:%M')}，非活跃时段，等待 {wait_seconds//60} 分钟后开始...")
-        time.sleep(wait_seconds)
-
 
 # =============================================================================
 # Cookie 持久化
 # =============================================================================
 
-COOKIES_FILE = Path(__file__).parent / "beike_session.json"
+COOKIES_FILE    = Path(__file__).parent / "beike_session.json"
+USER_DATA_DIR   = Path(__file__).parent / "browser_profile"   # 持久化浏览器 Profile
 
 
 async def save_session_cookies(context: BrowserContext, path: Path = COOKIES_FILE) -> None:
@@ -98,6 +131,9 @@ def _is_session_valid(path: Path = COOKIES_FILE) -> bool:
 async def ensure_beike_login() -> None:
     """
     打开可见浏览器，等待用户手动登录贝壳后保存 Cookie。
+
+    使用持久化 Profile（USER_DATA_DIR）启动，浏览器保留完整历史和本地存储，
+    避免贝壳检测到无状态自动化浏览器后不断刷新/重置登录表单。
     Cookie 文件存在且 lianjia_ssid 未过期则跳过；否则强制重新登录。
     """
     if _is_session_valid():
@@ -108,15 +144,28 @@ async def ensure_beike_login() -> None:
         print("[登录] 上次保存的 Cookie 已过期，需要重新登录...")
         COOKIES_FILE.unlink()
 
-    print("[登录] 即将打开浏览器窗口，请完成登录后回到此终端按 Enter 继续")
-    print("[登录] 注意：请只在登录完成、页面跳回搜索结果后再按 Enter，不要在登录页按")
+    print("[登录] 即将打开浏览器窗口，请完成登录...")
+    print("[登录] 提示：输入手机号 → 验证码 → 登录完成页面跳回首页后，再回到终端按 Enter")
 
-    async with BrowserEngine(headless=False) as engine:
-        context = await create_stealth_context(engine._browser, use_proxy=False)
+    USER_DATA_DIR.mkdir(exist_ok=True)
+
+    async with async_playwright() as p:
+        # launch_persistent_context 保留浏览器 Profile，减少反爬触发
+        context = await p.chromium.launch_persistent_context(
+            user_data_dir=str(USER_DATA_DIR),
+            headless=False,
+            args=[
+                "--no-sandbox",
+                "--disable-blink-features=AutomationControlled",
+                "--disable-dev-shm-usage",
+            ],
+            locale="zh-CN",
+            timezone_id="Asia/Shanghai",
+        )
         page = await context.new_page()
-        # 从首页进入更自然，降低被反爬识别的概率
-        await page.goto("https://gz.ke.com/", wait_until="domcontentloaded", timeout=30_000)
-        await async_human_delay(1.5, 2.5)
+        await page.goto("https://gz.ke.com/", wait_until="load", timeout=60_000)
+        # 等待 JS 完全执行、页面状态稳定
+        await asyncio.sleep(3)
 
         loop = asyncio.get_event_loop()
         await loop.run_in_executor(None, input, "")

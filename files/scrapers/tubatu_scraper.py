@@ -8,6 +8,7 @@ import re
 import random
 from dataclasses import dataclass, field
 from typing import Optional
+from urllib.parse import urlparse
 
 import pandas as pd
 
@@ -15,7 +16,6 @@ from scrapers.browser_engine import (
     BrowserEngine,
     async_human_delay,
     human_scroll,
-    wait_for_peak_hour,
 )
 
 
@@ -53,10 +53,10 @@ class TubatuScraper:
     # 旧入口 https://www.tubatu.com/cases/ 在当前环境会 TLS handshake failure；
     # 当前可访问的土巴兔整屋案例入口在 xiaoguotu.to8to.com。
     CASE_LIST_URL  = "https://xiaoguotu.to8to.com/case/area{area_code}/p{page}.html"
-    LEGACY_CASE_LIST_URL = "https://www.tubatu.com/cases/?city={city}&area={area_code}&style=0&page={page}"
     PRICE_CALC_URL = "https://www.tubatu.com/price/?city={city}&area={area}"
     MATERIAL_URL   = "https://www.tubatu.com/cailiao/{city}/pg{page}/"
     CASES_PER_PAGE_LIMIT = 12
+    DETAIL_CONCURRENCY   = 2
 
     AREA_BUCKETS = [
         (0,   60,  "1"),
@@ -67,6 +67,15 @@ class TubatuScraper:
         (151, 200, "6"),
         (201, 999, "10"),
     ]
+
+    CITY_DETAIL_HOSTS = {
+        "上海": {"sh.to8to.com", "shanghai.to8to.com"},
+        "北京": {"bj.to8to.com", "beijing.to8to.com"},
+        "广州": {"gz.to8to.com", "guangzhou.to8to.com"},
+        "深圳": {"sz.to8to.com", "shenzhen.to8to.com"},
+        "杭州": {"hz.to8to.com", "hangzhou.to8to.com"},
+        "成都": {"cd.to8to.com", "chengdu.to8to.com"},
+    }
 
     LEVEL_KEYWORDS = {
         "豪装":   ["豪装", "豪华", "顶配", "进口"],
@@ -89,8 +98,6 @@ class TubatuScraper:
         area_range: tuple[int, int] = (80, 100),
         pages: int = 5,
     ) -> list[RenovationCase]:
-        wait_for_peak_hour()
-
         area_codes = self._get_area_codes(area_range)
         cases = []
         seen_ids = set()
@@ -102,26 +109,27 @@ class TubatuScraper:
             "detail_success": 0,
             "detail_failed": 0,
             "failures": [],
-            "legacy_url_note": "旧 tubatu.com/cases 入口 TLS 失败，已切换到 xiaoguotu.to8to.com/case/areaN/pN.html",
         }
 
         async with BrowserEngine(headless=True) as engine:
             context, page = await engine.new_page()
-            detail_page = await context.new_page()
-            detail_page.set_default_timeout(45_000)
 
             try:
+                sem = asyncio.Semaphore(self.DETAIL_CONCURRENCY)
+
+                async def _fetch_one(it):
+                    async with sem:
+                        ctx, dp = await engine.new_page()
+                        try:
+                            return await self._fetch_case_detail(dp, it)
+                        finally:
+                            await ctx.close()
+
                 for area_code in area_codes:
                     for page_num in range(1, pages + 1):
                         url = self.CASE_LIST_URL.format(area_code=area_code, page=page_num)
-                        legacy_url = self.LEGACY_CASE_LIST_URL.format(
-                            city=self.city,
-                            area_code=area_code,
-                            page=page_num,
-                        )
                         stats["requested_pages"] += 1
-                        print(f"[土巴兔] 当前入口 area{area_code} 第 {page_num}/{pages} 页: {url}")
-                        print(f"[土巴兔] 旧入口仅诊断用: {legacy_url}")
+                        print(f"[土巴兔] area{area_code} 第 {page_num}/{pages} 页: {url}")
 
                         success, err = await self._goto(page, url)
                         if not success:
@@ -143,28 +151,33 @@ class TubatuScraper:
 
                         list_items = await self._parse_case_list(page)
                         stats["success_pages"] += 1
-                        print(f"[土巴兔] area{area_code} 第{page_num}页发现 {len(list_items)} 个候选案例")
+                        print(f"[土巴兔]   发现 {len(list_items)} 个候选，正在并发采集详情...")
 
+                        new_items = []
                         for item in list_items:
-                            case_id = item.get("case_id") or item.get("url")
-                            if case_id in seen_ids:
-                                continue
-                            seen_ids.add(case_id)
+                            cid = item.get("case_id") or item.get("url")
+                            if cid not in seen_ids:
+                                seen_ids.add(cid)
+                                new_items.append(item)
 
-                            detail = await self._fetch_case_detail(detail_page, item)
+                        results = await asyncio.gather(*[_fetch_one(it) for it in new_items])
+
+                        page_ok = 0
+                        for detail in results:
                             if detail is None:
                                 stats["detail_failed"] += 1
                                 continue
                             stats["detail_success"] += 1
-
+                            page_ok += 1
                             if detail.area > 0 and detail.total_price > 0:
                                 cases.append(detail)
+
+                        print(f"[土巴兔]   详情获取 {page_ok}/{len(new_items)} 条，累计 {len(cases)} 条")
 
                         if page_num < pages:
                             await async_human_delay(1.2, 2.5)
 
             finally:
-                await detail_page.close()
                 await context.close()
 
         self.last_case_stats = stats
@@ -182,6 +195,7 @@ class TubatuScraper:
         retries: int = 2,
         wait_until: str = "commit",
         timeout: int = 20_000,
+        log_errors: bool = True,
     ) -> tuple[bool, str]:
         last_error = ""
         for attempt in range(1, retries + 1):
@@ -191,7 +205,8 @@ class TubatuScraper:
                 return True, ""
             except Exception as e:
                 last_error = str(e)
-                print(f"[土巴兔] 访问失败({attempt}/{retries}): {url} | {last_error}")
+                if log_errors:
+                    print(f"[土巴兔] 访问失败({attempt}/{retries}): {url} | {last_error}")
                 await async_human_delay(1.0, 2.0)
         return False, last_error
 
@@ -234,21 +249,33 @@ class TubatuScraper:
 
     async def _fetch_case_detail(self, page, item: dict) -> Optional[RenovationCase]:
         url = item.get("url", "")
+        if self._should_skip_detail_url(url):
+            return None
+
+        fallback = self._parse_case_data({
+            "case_id": item.get("case_id", ""),
+            "source_url": url,
+            "list_text": item.get("list_text", ""),
+        })
+        if fallback.area > 0 and fallback.total_price > 0:
+            return fallback
+
         success, err = await self._goto(
             page,
             url,
             retries=2,
-            wait_until="domcontentloaded",
-            timeout=45_000,
+            wait_until="commit",
+            timeout=20_000,
+            log_errors=False,
         )
         if not success:
-            print(f"[土巴兔] 详情页失败: {url} | {err}")
-            fallback = self._parse_case_data({
-                "case_id": item.get("case_id", ""),
-                "source_url": url,
-                "list_text": item.get("list_text", ""),
-            })
-            return fallback if fallback.area > 0 and fallback.total_price > 0 else None
+            print(f"[土巴兔] 详情页失败，已跳过: {url} | {self._short_error(err)}")
+            return None
+
+        try:
+            await page.wait_for_selector("body", timeout=8_000)
+        except Exception:
+            pass
 
         try:
             raw = await page.evaluate("""
@@ -273,6 +300,21 @@ class TubatuScraper:
         })
         case = self._parse_case_data(raw)
         return case if case.area > 0 and case.total_price > 0 else None
+
+    def _should_skip_detail_url(self, url: str) -> bool:
+        host = urlparse(url).netloc.lower()
+        if not host or host == "xiaoguotu.to8to.com":
+            return False
+
+        if host.endswith(".to8to.com"):
+            allowed_hosts = self.CITY_DETAIL_HOSTS.get(self.city)
+            return bool(allowed_hosts and host not in allowed_hosts)
+
+        return False
+
+    def _short_error(self, err: str, limit: int = 160) -> str:
+        one_line = re.sub(r"\s+", " ", err or "").strip()
+        return one_line[:limit] + ("..." if len(one_line) > limit else "")
 
     def _parse_case_data(self, raw: dict) -> RenovationCase:
         case = RenovationCase(city=self.city)
@@ -337,8 +379,6 @@ class TubatuScraper:
         categories: list[str] = None,
         pages_per_category: int = 3,
     ) -> list[MaterialPrice]:
-        wait_for_peak_hour()
-
         if categories is None:
             categories = [
                 "diban",       # 地板

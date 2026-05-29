@@ -9,7 +9,8 @@ from .dcf import calc_dcf
 SENSITIVITY_RANGES = {
     "occ_rate":      [0.50, 0.60, 0.70, 0.80],
     "rent_delta":    [-0.20, -0.10, 0.00, 0.10, 0.20],
-    "terminal_cap":  [0.035, 0.040, 0.045, 0.050],
+    "rent_growth_delta": [-0.02, -0.01, 0.00, 0.01, 0.02],
+    "terminal_cap_delta": [-0.01, 0.00, 0.01, 0.02],
     "discount_rate": [0.045, 0.055, 0.065, 0.075],
     "price_delta":   [0.00, -0.05, -0.10, -0.20],
 }
@@ -57,6 +58,11 @@ def run_sensitivity(
 
     def _base_call(mode_name, **overrides):
         mp = business_modes[mode_name]
+        base_terminal_cap = mp.get("terminal_cap", terminal_cap_base)
+        initial_capex = (
+            mp.get("initial_capex", 0.0)
+            + mp.get("initial_capex_per_sqm", 0.0) * sqm
+        )
         kw = dict(
             total_price   = base_total_price,
             down_pct      = down_pct,
@@ -68,7 +74,8 @@ def run_sensitivity(
             rent_growth   = mp["rent_growth"],
             discount_rate = disc_base,
             years         = years,
-            terminal_cap  = terminal_cap_base,
+            terminal_cap  = base_terminal_cap,
+            initial_capex = initial_capex,
         )
         kw.update(overrides)
         return _safe_dcf(**kw)
@@ -113,25 +120,46 @@ def run_sensitivity(
     }
 
     # ------------------------------------------------------------------
-    # 3. 退出 Cap Rate 敏感性
+    # 3. 租金增长敏感性（相对各模式基准增长率的百分点变化）
+    # ------------------------------------------------------------------
+    growth_results = {m: [] for m in modes}
+    for delta in SENSITIVITY_RANGES["rent_growth_delta"]:
+        for m in modes:
+            base_growth = business_modes[m]["rent_growth"]
+            r = _base_call(m, rent_growth=max(0.0, base_growth + delta))
+            growth_results[m].append(r["irr"])
+
+    results["rent_growth"] = {
+        "param_name":   "租金年增长",
+        "metric":       "irr",
+        "levels":       SENSITIVITY_RANGES["rent_growth_delta"],
+        "level_labels": ["基准-2pp", "基准-1pp", "基准", "基准+1pp", "基准+2pp"],
+        "base_index":   2,
+        "results":      growth_results,
+    }
+
+    # ------------------------------------------------------------------
+    # 4. 退出 Cap Rate 敏感性（相对各模式基准退出 cap 的百分点变化）
     # ------------------------------------------------------------------
     cap_results = {m: [] for m in modes}
-    for cap in SENSITIVITY_RANGES["terminal_cap"]:
+    for delta in SENSITIVITY_RANGES["terminal_cap_delta"]:
         for m in modes:
+            base_cap = business_modes[m].get("terminal_cap", terminal_cap_base)
+            cap = max(0.01, base_cap + delta)
             r = _base_call(m, terminal_cap=cap)
             cap_results[m].append(r["irr"])
 
     results["terminal_cap"] = {
         "param_name":   "退出Cap Rate",
         "metric":       "irr",
-        "levels":       SENSITIVITY_RANGES["terminal_cap"],
-        "level_labels": ["3.5%", "4.0%", "4.5%", "5.0%"],
+        "levels":       SENSITIVITY_RANGES["terminal_cap_delta"],
+        "level_labels": ["基准-1pp", "基准", "基准+1pp", "基准+2pp"],
         "base_index":   1,
         "results":      cap_results,
     }
 
     # ------------------------------------------------------------------
-    # 4. 折现率敏感性（只影响 NPV，不影响 IRR）
+    # 5. 折现率敏感性（只影响 NPV，不影响 IRR）
     # ------------------------------------------------------------------
     disc_results = {m: [] for m in modes}
     for dr in SENSITIVITY_RANGES["discount_rate"]:
@@ -150,13 +178,17 @@ def run_sensitivity(
     }
 
     # ------------------------------------------------------------------
-    # 5. 房价变动敏感性（影响首付 + 月供，从而影响 IRR）
+    # 6. 房价变动敏感性（影响首付 + 月供，从而影响 IRR）
     # ------------------------------------------------------------------
     price_results = {m: [] for m in modes}
     for delta in SENSITIVITY_RANGES["price_delta"]:
         adj_price = base_total_price * (1 + delta)
         for m in modes:
             mp = business_modes[m]
+            initial_capex = (
+                mp.get("initial_capex", 0.0)
+                + mp.get("initial_capex_per_sqm", 0.0) * sqm
+            )
             r = _safe_dcf(
                 total_price   = adj_price,
                 down_pct      = down_pct,
@@ -168,7 +200,8 @@ def run_sensitivity(
                 rent_growth   = mp["rent_growth"],
                 discount_rate = disc_base,
                 years         = years,
-                terminal_cap  = terminal_cap_base,
+                terminal_cap  = mp.get("terminal_cap", terminal_cap_base),
+                initial_capex = initial_capex,
             )
             price_results[m].append(r["irr"])
 
@@ -182,7 +215,7 @@ def run_sensitivity(
     }
 
     # ------------------------------------------------------------------
-    # 6. 龙卷图参考数据（民宿模式，排除 discount_rate）
+    # 7. 龙卷图参考数据（民宿模式，排除 discount_rate）
     # ------------------------------------------------------------------
     ref_mode = "民宿"
     base_irr_ref = _base_call(ref_mode)["irr"]

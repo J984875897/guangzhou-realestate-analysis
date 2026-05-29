@@ -132,7 +132,7 @@ def generate_all_charts(
         ("租金分布",     _chart_rent_distribution,   (rent_df, rent_info)),
         ("租售比",       _chart_rent_sale_ratio,     (house_df, rent_df)),
         ("DCF现金流",    _chart_dcf_cashflow,        (dcf_results, dcf_params)),
-        ("NPV_IRR对比",  _chart_npv_irr,             (dcf_results,)),
+        ("NPV_IRR对比",  _chart_npv_irr,             (dcf_results, dcf_params)),
         ("装修成本对比", _chart_renovation_cost,     (reno_summary, reno_info)),
     ]
 
@@ -441,7 +441,7 @@ def _chart_dcf_cashflow(dcf_results: dict, dcf_params: dict):
 # 图表5：NPV / IRR 对比
 # =============================================================================
 
-def _chart_npv_irr(dcf_results: dict):
+def _chart_npv_irr(dcf_results: dict, dcf_params: dict = None):
     if not dcf_results:
         return _placeholder_chart("DCF 数据缺失"), None
 
@@ -469,7 +469,7 @@ def _chart_npv_irr(dcf_results: dict):
     ax2.set_facecolor(COLORS["bg"])
     bars2 = ax2.bar(modes, irrs, color=colors, edgecolor="white", width=0.5)
     # 绘制折现率基准线
-    discount_rate_pct = 5.5   # 与 CONFIG["dcf_params"]["discount_rate"] 对应
+    discount_rate_pct = (dcf_params or {}).get("discount_rate", 0.055) * 100
     ax2.axhline(discount_rate_pct, color=COLORS["accent"], linewidth=1.5,
                 linestyle="--", label=f"折现率基准 {discount_rate_pct}%")
     for bar, val in zip(bars2, irrs):
@@ -1100,7 +1100,14 @@ def _chart_sensitivity_table(sensitivity_results: dict, dcf_params: dict):
     except ImportError:
         pc = None
 
-    PARAM_ORDER = ["occ_rate", "rent_per_sqm", "terminal_cap", "discount_rate", "price_delta"]
+    PARAM_ORDER = [
+        "occ_rate",
+        "rent_per_sqm",
+        "rent_growth",
+        "terminal_cap",
+        "discount_rate",
+        "price_delta",
+    ]
     modes = ["整租", "民宿", "隔断分租"]
 
     # ── 拼装表格行数据 ──────────────────────────────────────────────
@@ -1191,7 +1198,7 @@ def _chart_sensitivity_table(sensitivity_results: dict, dcf_params: dict):
         ))
         fig_plotly.update_layout(
             title=dict(text="敏感性分析：IRR / NPV 参数影响", font=dict(size=15)),
-            height=620,
+            height=700,
             template="plotly_white",
             margin=dict(l=20, r=20, t=60, b=50),
             annotations=[dict(

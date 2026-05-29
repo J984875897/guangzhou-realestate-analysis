@@ -188,7 +188,6 @@ def add_geo_features(
 
 def calc_per_community_irr(
     house_df: pd.DataFrame,
-    rent_per_sqm: float,
     dcf_params: dict,
     business_modes: dict,
 ) -> pd.DataFrame:
@@ -199,9 +198,8 @@ def calc_per_community_irr(
     Parameters
     ----------
     house_df      : 含 unit_price 列的小区 DataFrame
-    rent_per_sqm  : 区级租金中位数（元/㎡/月），用于所有小区
     dcf_params    : CONFIG["dcf_params"]（sqm, down_pct, loan_rate, discount_rate, years）
-    business_modes: BUSINESS_MODES dict（含 occ_rate, opex_ratio, rent_growth）
+    business_modes: BUSINESS_MODES dict（含 rent_per_sqm, occ_rate, opex_ratio, rent_growth）
     """
     df = house_df.copy()
 
@@ -228,13 +226,18 @@ def calc_per_community_irr(
                     total_price   = total_price,
                     down_pct      = down_pct,
                     loan_rate     = loan_rate,
-                    rent_per_sqm  = rent_per_sqm,
+                    rent_per_sqm  = mode_params["rent_per_sqm"],
                     sqm           = sqm,
                     occ_rate      = mode_params["occ_rate"],
                     opex_ratio    = mode_params["opex_ratio"],
                     rent_growth   = mode_params["rent_growth"],
                     discount_rate = discount_rate,
                     years         = years,
+                    terminal_cap  = mode_params.get("terminal_cap", 0.04),
+                    initial_capex = (
+                        mode_params.get("initial_capex", 0.0)
+                        + mode_params.get("initial_capex_per_sqm", 0.0) * sqm
+                    ),
                 )
                 irr_vals.append(result["irr"])
             except Exception:

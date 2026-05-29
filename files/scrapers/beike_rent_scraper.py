@@ -1,15 +1,11 @@
 # =============================================================================
 # scrapers/beike_rent_scraper.py
-# 贝壳租房地图接口批量采集租金数据
+# 贝壳租房公开列表页批量采集租金数据
 #
-# 思路与 beike_map_scraper.py 相同：
-#   拦截贝壳租房地图页（gz.ke.com/map/zufang/）的 Ajax 请求，
-#   直接解析 JSON，获取各小区/板块的挂牌租金数据。
-#
-# 与买房爬虫的关键差异：
-#   - 目标 URL：/map/zufang/ 而非 /map/ershoufang/
-#   - API 返回价格字段为月租（元/月），需结合面积换算成 元/㎡/月
-#   - 若 API 不返回面积，则在列表页补充采集单条租房面积
+# 核心思路：
+#   使用用户可直接访问的公开租房列表页，例如 /zufang/haizhu/。
+#   每条记录含月租和面积，直接换算为 元/㎡/月；遇到验证码/登录/访问受限
+#   页面时温和停止，并优先返回断点缓存。
 # =============================================================================
 
 import asyncio
@@ -17,13 +13,15 @@ import json
 import random
 import re
 from typing import Optional
-from urllib.parse import quote
+from pathlib import Path
+from urllib.parse import quote, urlparse
 
 import pandas as pd
 
 from scrapers.browser_engine import (
     BrowserEngine, async_human_delay, human_scroll,
-    wait_for_peak_hour, load_session_cookies,
+    load_session_cookies, save_session_cookies,
+    BeikeAccessError, detect_beike_page_state, raise_for_beike_access_issue,
 )
 
 
@@ -53,11 +51,12 @@ CITY_CONFIG = {
 
 # 广州海珠区典型租房面积（用于无法获取精确面积时的备用值）
 DEFAULT_AREA_SQM = 90.0
+CHECKPOINT_DIR = Path(__file__).parents[2] / "output" / "checkpoints"
 
 
 class BeikeRentScraper:
     """
-    通过拦截贝壳租房地图 Ajax 请求，批量获取各板块月租金数据
+    通过贝壳租房公开列表页，批量获取房源月租金数据
 
     使用方法：
         scraper = BeikeRentScraper(city="广州")
@@ -71,16 +70,23 @@ class BeikeRentScraper:
         self.config = CITY_CONFIG[city]
         self.captured_data: list[dict] = []
 
-    async def scrape_district(self, district: str, max_retries: int = 3) -> pd.DataFrame:
-        wait_for_peak_hour()
-
+    async def scrape_district(
+        self, district: str, max_retries: int = 3,
+        min_pages: int = 5, min_records: int = 150, max_pages: int = 100,
+    ) -> pd.DataFrame:
         for attempt in range(1, max_retries + 1):
             try:
                 print(f"[贝壳租房] 开始爬取 {self.city} - {district}（第{attempt}次尝试）")
-                result = await self._do_scrape(district)
+                result = await self._do_scrape(
+                    district, min_pages=min_pages, min_records=min_records, max_pages=max_pages,
+                )
                 if result is not None and len(result) > 0:
                     print(f"[贝壳租房] 成功获取 {len(result)} 条租房数据")
                     return result
+            except BeikeAccessError as e:
+                print(f"[贝壳租房] {e}")
+                print("[贝壳租房] !! 被验证码/登录页拦截，建议重新运行并加 --login 参数完成贝壳账号登录")
+                return pd.DataFrame()
             except Exception as e:
                 print(f"[贝壳租房] 第{attempt}次失败: {e}")
                 if attempt < max_retries:
@@ -91,7 +97,10 @@ class BeikeRentScraper:
         print(f"[贝壳租房] {max_retries}次重试后仍失败，返回空数据")
         return pd.DataFrame()
 
-    async def _do_scrape(self, district: str) -> Optional[pd.DataFrame]:
+    async def _do_scrape(
+        self, district: str,
+        min_pages: int = 5, min_records: int = 150, max_pages: int = 100,
+    ) -> Optional[pd.DataFrame]:
         self.captured_data = []
 
         async with BrowserEngine(headless=False, use_proxy=False) as engine:
@@ -99,47 +108,87 @@ class BeikeRentScraper:
             await load_session_cookies(context)
 
             try:
-                list_df = await self._fallback_list_scrape(page, engine, district)
-                if list_df is not None and not list_df.empty:
-                    return list_df
-
-                print("[贝壳租房] 租房列表页未采到数据，尝试地图接口...")
-                # 拦截租房地图 API —— 贝壳租房地图的端点通常包含 /zufang/ 或 /rent/
-                # 同时拦截多个可能的路径，实际生效的取决于页面版本
-                for pattern in [
-                    "**/proxyApi/i.o.rentMapData/**",
-                    "**/proxyApi/i.o.rentMapPoint/**",
-                    "**/api/rent/map/**",
-                    "**/map/zufang/**",
-                ]:
-                    await page.route(pattern, self._intercept_rent_response)
-
-                district_path = self._district_path(district)
-                rent_url = f"{self.config['map_url']}zufang/{district_path}/"
-                success = await engine.goto(page, rent_url)
-                if not success:
-                    return None
-
-                # 等待地图容器加载
-                await self._wait_for_map_ready(page, rent_url)
-
-                await async_human_delay(2.0, 4.0)
-                await self._simulate_map_interaction(page)
-                await async_human_delay(3.0, 5.0)
-
-                if not self.captured_data:
-                    print("[贝壳租房] 地图接口未拦截到数据，返回空数据")
-                    return await self._fallback_list_scrape(page, engine, district)
-
-                return self._process_captured_data()
+                return await self._fallback_list_scrape(
+                    page, engine, district,
+                    min_pages=min_pages, min_records=min_records, max_pages=max_pages,
+                )
 
             finally:
+                await save_session_cookies(context)
                 await context.close()
 
     def _district_path(self, district: str) -> str:
         """贝壳 URL 使用拼音区划路径；未知区划时退回 URL 编码。"""
         district_paths = self.config.get("district_paths", {})
         return district_paths.get(district, quote(district, safe=""))
+
+    def _build_list_url(self, district: str, page_num: int) -> str:
+        district_path = self._district_path(district).strip("/")
+        page_part = "" if page_num == 1 else f"pg{page_num}/"
+        return f"{self.config['rent_url']}{district_path}/{page_part}"
+
+    def _is_expected_list_page(self, current_url: str, target_url: str) -> bool:
+        current = urlparse(current_url)
+        target = urlparse(target_url)
+        current_path = current.path.rstrip("/")
+        target_path = target.path.rstrip("/")
+        return current.netloc == target.netloc and current_path == target_path
+
+    async def _ensure_rent_list_page(self, page, engine, list_url: str) -> bool:
+        state = await detect_beike_page_state(page)
+
+        if state in ("captcha", "login"):
+            await raise_for_beike_access_issue(page, list_url)
+            state = await detect_beike_page_state(page)
+
+        if state in ("not_found", "blocked"):
+            print(f"[贝壳租房] 当前页面状态为 {state}，重新打开正确租房列表页")
+            success = await engine.goto(page, list_url)
+            if not success:
+                return False
+            await raise_for_beike_access_issue(page, list_url)
+            return True
+
+        if not self._is_expected_list_page(page.url, list_url):
+            print(f"[贝壳租房] 登录/验证后未停在目标列表页，重新打开: {list_url}")
+            success = await engine.goto(page, list_url)
+            if not success:
+                return False
+            await raise_for_beike_access_issue(page, list_url)
+
+        return True
+
+    def _checkpoint_path(self, district: str) -> Path:
+        safe_name = f"beike_rent_{self.city}_{district}.csv".replace("/", "_")
+        return CHECKPOINT_DIR / safe_name
+
+    def _load_checkpoint(self, district: str) -> pd.DataFrame:
+        path = self._checkpoint_path(district)
+        if not path.exists():
+            return pd.DataFrame()
+        try:
+            df = pd.read_csv(path)
+            if not df.empty:
+                print(f"[贝壳租房] 发现断点缓存: {path.name} ({len(df)} 条)")
+            return df
+        except Exception as e:
+            print(f"[贝壳租房] 断点缓存读取失败: {path.name} | {e}")
+            return pd.DataFrame()
+
+    def _save_checkpoint(self, df: pd.DataFrame, district: str) -> None:
+        if df.empty:
+            return
+        CHECKPOINT_DIR.mkdir(parents=True, exist_ok=True)
+        path = self._checkpoint_path(district)
+        df.to_csv(path, index=False, encoding="utf-8-sig")
+
+    def _records_to_dataframe(self, records: list[dict]) -> pd.DataFrame:
+        if not records:
+            return pd.DataFrame()
+        df = pd.DataFrame(records)
+        df = df[df["monthly_rent_per_sqm"] > 0]
+        df = df.drop_duplicates(subset=["community_id", "house_title", "monthly_rent"])
+        return df.reset_index(drop=True)
 
     async def _wait_for_map_ready(self, page, expected_url: str) -> bool:
         try:
@@ -201,30 +250,46 @@ class BeikeRentScraper:
         page,
         engine,
         district: str,
-        pages: int = 5,
+        min_pages: int = 5,
+        min_records: int = 150,
+        max_pages: int = 100,
     ) -> Optional[pd.DataFrame]:
         """
         解析用户可正常打开的贝壳租房列表页。
         列表页每条记录含租金和面积，精度高于地图聚合数据。
         """
-        records = []
-        district_path = self._district_path(district)
+        checkpoint_df = self._load_checkpoint(district)
+        records = checkpoint_df.to_dict("records") if not checkpoint_df.empty else []
 
-        for page_num in range(1, pages + 1):
-            page_part = "" if page_num == 1 else f"pg{page_num}/"
-            list_url = f"{self.config['rent_url']}{district_path}/{page_part}"
-            print(f"[贝壳租房] 租房列表页 {page_num}/{pages}: {list_url}")
+        page_num = 1
+        while page_num <= max_pages:
+            list_url = self._build_list_url(district, page_num)
+            print(f"[贝壳租房] 租房列表页 {page_num} (已采集 {len(records)} 条): {list_url}")
 
             success = await engine.goto(page, list_url)
             if not success:
+                page_num += 1
                 continue
+            try:
+                page_ready = await self._ensure_rent_list_page(page, engine, list_url)
+                if not page_ready:
+                    page_num += 1
+                    continue
+            except BeikeAccessError:
+                if records:
+                    print("[贝壳租房] 页面受限，返回已保存的断点缓存")
+                    return self._records_to_dataframe(records)
+                raise
 
             try:
                 await page.wait_for_selector(".content__list--item", timeout=20_000)
             except Exception:
                 title = await page.title()
                 print(f"[贝壳租房] 租房列表页未找到房源卡片: {page.url} | {title}")
-                continue
+                if records:
+                    print("[贝壳租房] 当前页无房源卡片，返回已采集数据")
+                    break
+                return None
 
             await human_scroll(page, scroll_times=5)
             items = await page.query_selector_all(".content__list--item")
@@ -274,15 +339,21 @@ class BeikeRentScraper:
                 except Exception:
                     continue
 
+            current_df = self._records_to_dataframe(records)
+            self._save_checkpoint(current_df, district)
             await async_human_delay(1.5, 3.0)
+
+            if page_num >= min_pages and len(records) >= min_records:
+                print(f"[贝壳租房] 已满足停止条件（{page_num} 页 / {len(records)} 条），停止采集")
+                break
+            page_num += 1
 
         if not records:
             return None
 
-        df = pd.DataFrame(records)
-        df = df[df["monthly_rent_per_sqm"] > 0]
-        df = df.drop_duplicates(subset=["community_id", "house_title", "monthly_rent"])
-        return df.reset_index(drop=True)
+        df = self._records_to_dataframe(records)
+        self._save_checkpoint(df, district)
+        return df
 
     def _extract_monthly_rent(self, text: str) -> float:
         match = re.search(r"(\d[\d,]*)", text or "")
@@ -384,14 +455,19 @@ class BeikeRentScraper:
 # 多区域批量采集入口
 # =============================================================================
 
-async def batch_scrape_rent(city: str, districts: list[str]) -> pd.DataFrame:
+async def batch_scrape_rent(
+    city: str, districts: list[str],
+    min_pages: int = 5, min_records: int = 150, max_pages: int = 100,
+) -> pd.DataFrame:
     scraper = BeikeRentScraper(city=city)
     all_dfs = []
 
     for i, district in enumerate(districts):
         print(f"\n[进度] {i+1}/{len(districts)}：{district} 租房数据")
 
-        df = await scraper.scrape_district(district)
+        df = await scraper.scrape_district(
+            district, min_pages=min_pages, min_records=min_records, max_pages=max_pages,
+        )
         if not df.empty:
             if "district" not in df.columns or df["district"].eq("").all():
                 df["district"] = district
